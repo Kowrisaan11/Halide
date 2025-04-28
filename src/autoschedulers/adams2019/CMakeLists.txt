@@ -55,6 +55,7 @@ add_autoscheduler(
     Cache.cpp
     DefaultCostModel.cpp
     GraphRepresentation.cpp
+    TreeRepresentation.cpp
     LoopNest.cpp
     State.cpp
     Weights.cpp
