@@ -54,7 +54,7 @@ add_autoscheduler(
     AutoSchedule.cpp
     Cache.cpp
     DefaultCostModel.cpp
-    FunctionDAG.cpp
+    GraphRepresentation.cpp
     LoopNest.cpp
     State.cpp
     Weights.cpp
@@ -63,6 +63,10 @@ add_autoscheduler(
 
 target_include_directories(Halide_Adams2019 PRIVATE "${Halide_SOURCE_DIR}/src/autoschedulers/adams2019")
 target_link_libraries(Halide_Adams2019 PRIVATE adams2019_cost_model adams2019_train_cost_model)
+
+# Find and link nlohmann_json
+find_package(nlohmann_json REQUIRED)
+target_link_libraries(Halide_Adams2019 PRIVATE nlohmann_json::nlohmann_json)
 
 # ====================================================
 # Auto-tuning support utilities.
@@ -74,13 +78,13 @@ if (WITH_UTILS)
 endif ()
 
 # =================================================================
-# Tests for private/internal functionality of Adams2019 (vs for public functionality,
-# which is handled in tests/autoschedulers/Adams2019)
+# Tests for private/internal functionality of Adams2019
 
 if (WITH_TESTS)
-    add_executable(adams2019_test_function_dag test_function_dag.cpp FunctionDAG.cpp)
-    target_link_libraries(adams2019_test_function_dag PRIVATE Halide::Plugin)
+    add_executable(adams2019_test_graph_representation test_graph_representation.cpp GraphRepresentation.cpp)
+    target_include_directories(adams2019_test_graph_representation PRIVATE "${Halide_SOURCE_DIR}/src/autoschedulers/adams2019")
+    target_link_libraries(adams2019_test_graph_representation PRIVATE Halide::Plugin nlohmann_json::nlohmann_json)
 
-    add_test(NAME adams2019_test_function_dag COMMAND adams2019_test_function_dag)
-    set_tests_properties(adams2019_test_function_dag PROPERTIES LABELS "adams2019;autoschedulers_cpu")
+    add_test(NAME adams2019_test_graph_representation COMMAND adams2019_test_graph_representation)
+    set_tests_properties(adams2019_test_graph_representation PROPERTIES LABELS "adams2019;autoschedulers_cpu")
 endif()
