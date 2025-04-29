@@ -309,11 +309,24 @@ IntrusivePtr<State> optimal_schedule(GraphRepresentation& graph,
     string num_passes_str = get_env_variable("HL_NUM_PASSES");
     if (!num_passes_str.empty()) num_passes = std::atoi(num_passes_str.c_str());
 
+    Adams2019Params params3 = params;
+
+    // Optional dynamic beam size adjustment, enabled via HL_DYNAMIC_BEAM_SIZE=1
+    string dynamic_beam_size_str = get_env_variable("HL_DYNAMIC_BEAM_SIZE");
+    bool use_dynamic_beam_size = dynamic_beam_size_str == "1";
+
     for (int i = 0; i < num_passes; i++) {
+        if (use_dynamic_beam_size) {
+            params3.beam_size = (int)(160 / (7 * i + 5));
+            aslog(1) << "Pass " << i << " using dynamic beam size: " << params3.beam_size << "\n";
+        }
+
         ProgressBar tick;
         Timer timer;
-        auto pass = optimal_schedule_pass(graph, outputs, params, cost_model, rng, i, num_passes, tick, permitted_hashes, &cache);
-        auto milli = std::chrono::duration_cast<std::chrono::milliseconds>(timer.elapsed()).count();
+        auto pass = optimal_schedule_pass(graph, outputs, params3, cost_model,
+                                         rng, i, num_passes, tick, permitted_hashes, &cache);
+        std::chrono::duration<double> total_time = timer.elapsed();
+        auto milli = std::chrono::duration_cast<std::chrono::milliseconds>(total_time).count();
         tick.clear();
 
         switch (aslog::aslog_level()) {

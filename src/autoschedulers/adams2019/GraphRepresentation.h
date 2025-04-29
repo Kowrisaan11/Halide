@@ -1,18 +1,63 @@
 #ifndef GRAPH_REPRESENTATION_H
 #define GRAPH_REPRESENTATION_H
 
+#include "Halide.h"
+#include "Featurization.h"
+#include <nlohmann/json.hpp>
 #include <map>
 #include <string>
 #include <vector>
-#include <nlohmann/json.hpp>
-#include "Featurization.h"
-#include "Halide.h"
 
 namespace Halide {
 namespace Internal {
 namespace Autoscheduler {
 
 using json = nlohmann::json;
+
+// Forward declaration
+struct Adams2019Params;
+
+struct ScheduleFeatures {
+    int num_realizations = 0;
+    int num_productions = 0;
+    int points_computed_per_realization = 0;
+    int points_computed_per_production = 0;
+    int points_computed_total = 0;
+    int points_computed_minimum = 0;
+    int innermost_loop_extent = 0;
+    int innermost_pure_loop_extent = 0;
+    int unrolled_loop_extent = 0;
+    int inner_parallelism = 0;
+    int outer_parallelism = 0;
+    int bytes_at_realization = 0;
+    int bytes_at_production = 0;
+    int bytes_at_root = 0;
+    int innermost_bytes_at_realization = 0;
+    int innermost_bytes_at_production = 0;
+    int innermost_bytes_at_root = 0;
+    int inlined_calls = 0;
+    int unique_bytes_read_per_realization = 0;
+    int unique_lines_read_per_realization = 0;
+    int allocation_bytes_read_per_realization = 0;
+    int working_set = 0;
+    int vector_size = 0;
+    int native_vector_size = 0;
+    int num_vectors = 0;
+    int num_scalars = 0;
+    int scalar_loads_per_vector = 0;
+    int vector_loads_per_vector = 0;
+    int scalar_loads_per_scalar = 0;
+    int bytes_at_task = 0;
+    int innermost_bytes_at_task = 0;
+    int unique_bytes_read_per_vector = 0;
+    int unique_lines_read_per_vector = 0;
+    int unique_bytes_read_per_task = 0;
+    int unique_lines_read_per_task = 0;
+    int working_set_at_task = 0;
+    int working_set_at_production = 0;
+    int working_set_at_realization = 0;
+    int working_set_at_root = 0;
+};
 
 struct GraphRepresentation {
     struct Node {
@@ -32,6 +77,8 @@ struct GraphRepresentation {
         std::vector<Span> estimated_region_required;
         std::vector<RegionComputedInfo> region_computed;
         bool region_computed_all_common_cases;
+        PipelineFeatures features;       // Op histogram and memory patterns
+        ScheduleFeatures sched_features; // Scheduling features
 
         struct Stage {
             Node* node;
@@ -185,11 +232,14 @@ struct GraphRepresentation {
 
     std::vector<Node> nodes;
     std::vector<Edge> edges;
-    json graph_json;
+    json operations;        // Convolution, Resampling, etc.
+    json global_features;   // Execution time, cache hits/misses
 
     GraphRepresentation(const std::vector<Function>& outputs, const Target& target);
     void dump(std::ostream& os) const;
-    void to_json(std::ostream& os) const;
+    json to_json() const;
+    static void generate(const Func& output, const std::string& output_dir,
+                         const std::string& pipeline_name, int beam_size = 32);
 
 private:
     void featurize();

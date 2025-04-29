@@ -1,6 +1,10 @@
 #include "GraphRepresentation.h"
 #include "ASLog.h"
+#include "Errors.h"
 #include <nlohmann/json.hpp>
+#include <filesystem>
+#include <fstream>
+#include <regex>
 #include <sstream>
 
 namespace Halide {
@@ -8,6 +12,7 @@ namespace Internal {
 namespace Autoscheduler {
 
 using json = nlohmann::json;
+namespace fs = std::filesystem;
 
 namespace {
 
@@ -205,6 +210,39 @@ bool depends_on_estimate(const Expr& expr) {
     DependsOnEstimate checker;
     expr.accept(&checker);
     return checker.found_estimate;
+}
+
+// Utility functions for parsing stdout content (from main)
+std::vector<int> parse_dimensions(const std::string& dim_str) {
+    std::vector<int> dims;
+    std::stringstream ss(dim_str);
+    std::string num;
+    while (std::getline(ss, num, ',')) {
+        num.erase(std::remove_if(num.begin(), num.end(), [](unsigned char c) { return std::isspace(c); }), num.end());
+        try {
+            dims.push_back(std::stoi(num));
+        } catch (const std::invalid_argument& e) {
+            std::cerr << "Error parsing dimension: '" << num << "' in '" << dim_str << "'" << std::endl;
+            return std::vector<int>();
+        }
+    }
+    return dims;
+}
+
+std::vector<int> parse_kernel(const std::string& kernel_str) {
+    std::vector<int> kernel;
+    std::regex num_regex("[-]?\\d+");
+    auto begin = std::sregex_iterator(kernel_str.begin(), kernel_str.end(), num_regex);
+    auto end = std::sregex_iterator();
+    for (auto i = begin; i != end; ++i) {
+        try {
+            kernel.push_back(std::stoi(i->str()));
+        } catch (const std::invalid_argument& e) {
+            std::cerr << "Error parsing kernel value: '" << i->str() << "' in '" << kernel_str << "'" << std::endl;
+            return std::vector<int>();
+        }
+    }
+    return kernel;
 }
 
 }  // namespace
@@ -642,7 +680,6 @@ GraphRepresentation::GraphRepresentation(const std::vector<Function>& outputs, c
     }
 
     featurize();
-    to_json(std::stringstream());
 }
 
 void GraphRepresentation::featurize() {
@@ -702,7 +739,7 @@ void GraphRepresentation::dump(std::ostream& os) const {
     }
 }
 
-void GraphRepresentation::to_json(std::ostream& os) const {
+json GraphRepresentation::to_json() const {
     json graph;
     graph["nodes"] = json::array();
     graph["edges"] = json::array();
@@ -719,6 +756,24 @@ void GraphRepresentation::to_json(std::ostream& os) const {
         "Or", "Param", "Select", "SelfCall", "Sub", "Variable"
     };
     const std::vector<std::string> memory_pattern_keys = {"Pointwise", "Transpose", "Broadcast", "Slice"};
+    const std::vector<std::string> scheduling_keys = {
+        "num_realizations", "num_productions", "points_computed_per_realization",
+        "points_computed_per_production", "points_computed_total",
+        "points_computed_minimum", "innermost_loop_extent",
+        "innermost_pure_loop_extent", "unrolled_loop_extent",
+        "inner_parallelism", "outer_parallelism", "bytes_at_realization",
+        "bytes_at_production", "bytes_at_root", "innermost_bytes_at_realization",
+        "innermost_bytes_at_production", "innermost_bytes_at_root",
+        "inlined_calls", "unique_bytes_read_per_realization",
+        "unique_lines_read_per_realization", "allocation_bytes_read_per_realization",
+        "working_set", "vector_size", "native_vector_size", "num_vectors",
+        "num_scalars", "scalar_loads_per_vector", "vector_loads_per_vector",
+        "scalar_loads_per_scalar", "bytes_at_task", "innermost_bytes_at_task",
+        "unique_bytes_read_per_vector", "unique_lines_read_per_vector",
+        "unique_bytes_read_per_task", "unique_lines_read_per_task",
+        "working_set_at_task", "working_set_at_production",
+        "working_set_at_realization", "working_set_at_root"
+    };
 
     for (const auto& node : nodes) {
         json node_json;
@@ -732,6 +787,7 @@ void GraphRepresentation::to_json(std::ostream& os) const {
 
         for (const auto& key : op_histogram_keys) features["op_histogram"][key] = 0;
         for (const auto& key : memory_pattern_keys) features["memory_patterns"][key] = std::vector<int>{0, 0, 0, 0};
+        for (const auto& key : scheduling_keys) features["scheduling"][key] = 0; // Initialize ScheduleFeatures
 
         for (const auto& stage : node.stages) {
             for (int i = 0; i < (int)PipelineFeatures::ScalarType::NumScalarTypes; i++) {
@@ -775,6 +831,47 @@ void GraphRepresentation::to_json(std::ostream& os) const {
                 }
             }
         }
+
+        // Populate ScheduleFeatures from node.sched_features
+        features["scheduling"]["num_realizations"] = node.sched_features.num_realizations;
+        features["scheduling"]["num_productions"] = node.sched_features.num_productions;
+        features["scheduling"]["points_computed_per_realization"] = node.sched_features.points_computed_per_realization;
+        features["scheduling"]["points_computed_per_production"] = node.sched_features.points_computed_per_production;
+        features["scheduling"]["points_computed_total"] = node.sched_features.points_computed_total;
+        features["scheduling"]["points_computed_minimum"] = node.sched_features.points_computed_minimum;
+        features["scheduling"]["innermost_loop_extent"] = node.sched_features.innermost_loop_extent;
+        features["scheduling"]["innermost_pure_loop_extent"] = node.sched_features.innermost_pure_loop_extent;
+        features["scheduling"]["unrolled_loop_extent"] = node.sched_features.unrolled_loop_extent;
+        features["scheduling"]["inner_parallelism"] = node.sched_features.inner_parallelism;
+        features["scheduling"]["outer_parallelism"] = node.sched_features.outer_parallelism;
+        features["scheduling"]["bytes_at_realization"] = node.sched_features.bytes_at_realization;
+        features["scheduling"]["bytes_at_production"] = node.sched_features.bytes_at_production;
+        features["scheduling"]["bytes_at_root"] = node.sched_features.bytes_at_root;
+        features["scheduling"]["innermost_bytes_at_realization"] = node.sched_features.innermost_bytes_at_realization;
+        features["scheduling"]["innermost_bytes_at_production"] = node.sched_features.innermost_bytes_at_production;
+        features["scheduling"]["innermost_bytes_at_root"] = node.sched_features.innermost_bytes_at_root;
+        features["scheduling"]["inlined_calls"] = node.sched_features.inlined_calls;
+        features["scheduling"]["unique_bytes_read_per_realization"] = node.sched_features.unique_bytes_read_per_realization;
+        features["scheduling"]["unique_lines_read_per_realization"] = node.sched_features.unique_lines_read_per_realization;
+        features["scheduling"]["allocation_bytes_read_per_realization"] = node.sched_features.allocation_bytes_read_per_realization;
+        features["scheduling"]["working_set"] = node.sched_features.working_set;
+        features["scheduling"]["vector_size"] = node.sched_features.vector_size;
+        features["scheduling"]["native_vector_size"] = node.sched_features.native_vector_size;
+        features["scheduling"]["num_vectors"] = node.sched_features.num_vectors;
+        features["scheduling"]["num_scalars"] = node.sched_features.num_scalars;
+        features["scheduling"]["scalar_loads_per_vector"] = node.sched_features.scalar_loads_per_vector;
+        features["scheduling"]["vector_loads_per_vector"] = node.sched_features.vector_loads_per_vector;
+        features["scheduling"]["scalar_loads_per_scalar"] = node.sched_features.scalar_loads_per_scalar;
+        features["scheduling"]["bytes_at_task"] = node.sched_features.bytes_at_task;
+        features["scheduling"]["innermost_bytes_at_task"] = node.sched_features.innermost_bytes_at_task;
+        features["scheduling"]["unique_bytes_read_per_vector"] = node.sched_features.unique_bytes_read_per_vector;
+        features["scheduling"]["unique_lines_read_per_vector"] = node.sched_features.unique_lines_read_per_vector;
+        features["scheduling"]["unique_bytes_read_per_task"] = node.sched_features.unique_bytes_read_per_task;
+        features["scheduling"]["unique_lines_read_per_task"] = node.sched_features.unique_lines_read_per_task;
+        features["scheduling"]["working_set_at_task"] = node.sched_features.working_set_at_task;
+        features["scheduling"]["working_set_at_production"] = node.sched_features.working_set_at_production;
+        features["scheduling"]["working_set_at_realization"] = node.sched_features.working_set_at_realization;
+        features["scheduling"]["working_set_at_root"] = node.sched_features.working_set_at_root;
 
         nodes_json.push_back(node_json);
         node_id_map[node.name] = node.id;
@@ -820,9 +917,113 @@ void GraphRepresentation::to_json(std::ostream& os) const {
 
     graph["nodes"] = nodes_json;
     graph["edges"] = edges_json;
-    graph_json = graph;
-    os << graph.dump();
+    // Operations and global_features are placeholders; populate in generate() or other methods
+    graph["global_features"]["execution_time_ms"] = 0.0;
+    graph["global_features"]["cache_hits"] = 0;
+    graph["global_features"]["cache_misses"] = 0;
+
+    return graph;
 }
+
+#if 0 // Disabled due to undefined dependencies (apply_autoscheduler, get_autoscheduler_features, get_pipeline_operations)
+void GraphRepresentation::generate(const Func& output, const std::string& output_dir,
+                                  const std::string& pipeline_name, int beam_size) {
+    fs::create_directories(output_dir);
+
+    for (int i = 0; i < beam_size; ++i) {
+        // Run autoscheduler
+        AutoSchedulerResults results = apply_autoscheduler(output, {"Adams2019"}, {});
+        std::vector<Function> outputs = {output.function()};
+        Target target = get_host_target();
+
+        // Get featurization data
+        std::vector<PipelineFeatures> pipeline_features;
+        std::vector<ScheduleFeatures> schedule_features;
+        bool success = get_autoscheduler_features(output, i, pipeline_features, schedule_features);
+        if (!success) {
+            std::cerr << "Error: Failed to get featurization data for schedule " << i << " of pipeline " << pipeline_name << std::endl;
+            continue;
+        }
+
+        // Get stdout content
+        std::string stdout_content;
+        success = get_pipeline_operations(output, stdout_content);
+        if (!success) {
+            std::cerr << "Error: Failed to get pipeline operations for schedule " << i << " of pipeline " << pipeline_name << std::endl;
+            continue;
+        }
+
+        // Parse operations from stdout_content
+        json operations = json::array();
+        std::istringstream stdout_ss(stdout_content);
+        std::string line;
+        int op_id = 0;
+        json current_op;
+        while (std::getline(stdout_ss, line)) {
+            if (line.find("Convolving") != std::string::npos) {
+                if (!current_op.empty()) operations.push_back(current_op);
+                current_op = json{{"id", op_id++}, {"type", "Convolution"}};
+                std::regex dim_kernel_regex("with kernel \\[([-]?\\d+,? ?)+\\]");
+                std::smatch match;
+                if (std::regex_search(line, match, dim_kernel_regex)) {
+                    current_op["kernel"] = parse_kernel(match[0].str().substr(match[0].str().find('[')));
+                }
+            } else if (line.find("Resampling") != std::string::npos) {
+                if (!current_op.empty()) operations.push_back(current_op);
+                current_op = json{{"id", op_id++}, {"type", "Resampling"}};
+                std::regex dim_regex("from (\\d+, \\d+, \\d+) to (\\d+, \\d+, \\d+)");
+                std::smatch match;
+                if (std::regex_search(line, match, dim_regex)) {
+                    current_op["input_dims"] = parse_dimensions(match[1].str());
+                    current_op["output_dims"] = parse_dimensions(match[2].str());
+                }
+            } else if (line.find("Pooling") != std::string::npos) {
+                if (!current_op.empty()) operations.push_back(current_op);
+                current_op = json{{"id", op_id++}, {"type", "Pooling"}};
+                std::regex stride_kernel_regex("stride: (\\d+) and kernel \\[([-]?\\d+,? ?)+\\]");
+                std::smatch match;
+                if (std::regex_search(line, match, stride_kernel_regex)) {
+                    current_op["stride"] = std::stoi(match[1].str());
+                    current_op["kernel"] = parse_kernel(match[2].str());
+                }
+            } else if (line.find("Approx size:") != std::string::npos) {
+                std::regex size_regex("Approx size: (\\d+, \\d+, \\d+)");
+                std::smatch match;
+                if (std::regex_search(line, match, size_regex)) {
+                    if (!current_op.empty() && current_op.value("output_dims", std::vector<int>{}).empty()) {
+                        current_op["output_dims"] = parse_dimensions(match[1].str());
+                    }
+                }
+            }
+        }
+        if (!current_op.empty()) operations.push_back(current_op);
+
+        // Update GraphRepresentation with operations
+        GraphRepresentation graph(outputs, target);
+        graph.operations = operations;
+        graph.global_features["execution_time_ms"] = results.execution_time;
+        graph.global_features["cache_hits"] = 0; // Placeholder
+        graph.global_features["cache_misses"] = 0; // Placeholder
+
+        // Update nodes with provided features
+        for (size_t j = 0; j < graph.nodes.size() && j < pipeline_features.size() && j < schedule_features.size(); ++j) {
+            graph.nodes[j].features = pipeline_features[j];
+            graph.nodes[j].sched_features = schedule_features[j];
+        }
+
+        json graph_data = graph.to_json();
+        std::string output_file = output_dir + "/" + pipeline_name + "_schedule_" + std::to_string(i) + ".json";
+        std::ofstream ofs(output_file);
+        if (ofs.is_open()) {
+            ofs << graph_data.dump(4);
+            ofs.close();
+            std::cout << "Graph representation saved to " << output_file << std::endl;
+        } else {
+            std::cerr << "Error: Could not open output file " << output_file << std::endl;
+        }
+    }
+}
+#endif
 
 }  // namespace Autoscheduler
 }  // namespace Internal
