@@ -2,13 +2,6 @@
 # Build rules for the Adams2019 autoscheduler library
 ##
 
-# =================================================================
-# Add LibTorch configuration (NEW SECTION)
-set(Torch_DIR "/home/kowrisaan/fyp/libtorch/share/cmake/Torch")
-find_package(Torch REQUIRED)
-message(STATUS "Torch includes: ${TORCH_INCLUDE_DIRS}")
-# =================================================================
-
 set(COMMON_DIR "${Halide_SOURCE_DIR}/src/autoschedulers/common")
 
 # =================================================================
@@ -24,20 +17,37 @@ add_library(adams2019_weights_obj OBJECT ${WF_CPP})
 
 # cost_model, train_cost_model
 add_executable(adams2019_cost_model.generator cost_model_generator.cpp)
-# Add Torch includes and libraries (MODIFIED)
-target_include_directories(adams2019_cost_model.generator PRIVATE 
-    ${TORCH_INCLUDE_DIRS}
-    "${Halide_SOURCE_DIR}/src/autoschedulers/adams2019"
-)
-target_link_libraries(adams2019_cost_model.generator PRIVATE 
-    Halide::Generator 
-    ${TORCH_LIBRARIES}
-)
+target_link_libraries(adams2019_cost_model.generator PRIVATE Halide::Generator)
 
-# ... rest of existing code ...
+add_halide_library(adams2019_cost_model FROM adams2019_cost_model.generator
+                   GENERATOR cost_model
+                   FUNCTION_NAME cost_model
+                   FEATURES[x86-64-osx] avx2 sse41
+                   FEATURES[arm-64-osx] arm_dot_prod-arm_fp16)
+
+add_halide_library(adams2019_train_cost_model FROM adams2019_cost_model.generator
+                   GENERATOR train_cost_model
+                   FUNCTION_NAME train_cost_model
+                   FEATURES[x86-64-osx] avx2 sse41
+                   FEATURES[arm-64-osx] arm_dot_prod-arm_fp16
+                   USE_RUNTIME adams2019_cost_model.runtime)
+
+# adams2019_retrain_cost_model
+if (WITH_UTILS)
+    add_executable(adams2019_retrain_cost_model
+                   DefaultCostModel.cpp
+                   Weights.cpp
+                   retrain_cost_model.cpp
+                   $<TARGET_OBJECTS:adams2019_weights_obj>)
+    target_include_directories(adams2019_retrain_cost_model PRIVATE "${Halide_SOURCE_DIR}/src/autoschedulers/adams2019")
+    target_link_libraries(adams2019_retrain_cost_model PRIVATE adams2019_cost_model adams2019_train_cost_model Halide::Plugin)
+endif ()
 
 # =================================================================
+##
 # Main autoscheduler library
+##
+
 add_autoscheduler(
     NAME Adams2019
     SOURCES
@@ -51,34 +61,26 @@ add_autoscheduler(
     $<TARGET_OBJECTS:adams2019_weights_obj>
 )
 
-# Add Torch includes and libraries (MODIFIED)
-target_include_directories(Halide_Adams2019 PRIVATE 
-    "${Halide_SOURCE_DIR}/src/autoschedulers/adams2019"
-    ${TORCH_INCLUDE_DIRS}
-)
-target_link_libraries(Halide_Adams2019 PRIVATE 
-    adams2019_cost_model 
-    adams2019_train_cost_model
-    ${TORCH_LIBRARIES}
-)
+target_include_directories(Halide_Adams2019 PRIVATE "${Halide_SOURCE_DIR}/src/autoschedulers/adams2019")
+target_link_libraries(Halide_Adams2019 PRIVATE adams2019_cost_model adams2019_train_cost_model)
+
+# ====================================================
+# Auto-tuning support utilities.
+
+if (WITH_UTILS)
+    add_executable(adams2019_weightsdir_to_weightsfile weightsdir_to_weightsfile.cpp Weights.cpp)
+    target_include_directories(adams2019_weightsdir_to_weightsfile PRIVATE ${COMMON_DIR})
+    target_link_libraries(adams2019_weightsdir_to_weightsfile PRIVATE Halide::Runtime)
+endif ()
 
 # =================================================================
-# Auto-tuning support utilities
-if (WITH_UTILS)
-    add_executable(adams2019_retrain_cost_model
-                   DefaultCostModel.cpp
-                   Weights.cpp
-                   retrain_cost_model.cpp
-                   $<TARGET_OBJECTS:adams2019_weights_obj>)
-    # Add Torch includes (MODIFIED)
-    target_include_directories(adams2019_retrain_cost_model PRIVATE 
-        "${Halide_SOURCE_DIR}/src/autoschedulers/adams2019"
-        ${TORCH_INCLUDE_DIRS}
-    )
-    target_link_libraries(adams2019_retrain_cost_model PRIVATE 
-        adams2019_cost_model 
-        adams2019_train_cost_model 
-        Halide::Plugin
-        ${TORCH_LIBRARIES}
-    )
-endif ()
+# Tests for private/internal functionality of Adams2019 (vs for public functionality,
+# which is handled in tests/autoschedulers/Adams2019)
+
+if (WITH_TESTS)
+    add_executable(adams2019_test_function_dag test_function_dag.cpp FunctionDAG.cpp)
+    target_link_libraries(adams2019_test_function_dag PRIVATE Halide::Plugin)
+
+    add_test(NAME adams2019_test_function_dag COMMAND adams2019_test_function_dag)
+    set_tests_properties(adams2019_test_function_dag PROPERTIES LABELS "adams2019;autoschedulers_cpu")
+endif()
