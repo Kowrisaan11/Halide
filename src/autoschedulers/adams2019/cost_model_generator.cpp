@@ -1,568 +1,675 @@
-// This file defines our cost model as a Halide generator. It is
-// templated such that it can be compiled in either forward or
-// backwards mode, for inference or training respectively.
-
-#include <utility>
+#include <torch/script.h>
+#include <torch/torch.h>
+#include <nlohmann/json.hpp>
+#include <fstream>
+#include <vector>
+#include <map>
+#include <algorithm>
+#include <chrono>
+#include <cmath>
 
 #include "Halide.h"
 
-#include "NetworkSize.h"
-#include "cost_model_schedule.h"
-
 using namespace Halide;
-using Halide::Derivative;
+using json = nlohmann::json;
 
-// A model weight is either just an input, or an input and an output
-// (the updated weights and the ADAM state) depending on whether we're
-// doing inference or training.
-template<bool training>
-struct ModelWeight;
-
-template<>
-struct ModelWeight<false> : public GeneratorInput<Buffer<float>> {
-    ModelWeight(const std::string &name, int dim)
-        : GeneratorInput<Buffer<float>>(name, dim) {
-    }
-    void backprop(const Derivative &d, const Expr &learning_rate, const Expr &timestep) {
-    }
-    void set_shape(int s0 = 0, int s1 = 0, int s2 = 0) {
-        if (s0) {
-            dim(0).set_bounds(0, s0);
-        }
-        if (s1) {
-            dim(1).set_bounds(0, s1);
-        }
-        if (s2) {
-            dim(2).set_bounds(0, s2);
-        }
-    }
+// Define FIXED_FEATURES as in the Python code
+const std::vector<std::string> FIXED_FEATURES = {
+    "cache_hits", "cache_misses", "execution_time_ms", "sched_num_realizations",
+    "sched_num_productions", "sched_points_computed_total", "sched_innermost_loop_extent",
+    "sched_inner_parallelism", "sched_outer_parallelism", "sched_bytes_at_realization",
+    "sched_bytes_at_production", "sched_bytes_at_root", "sched_unique_bytes_read_per_realization",
+    "sched_working_set", "sched_vector_size", "sched_num_vectors", "sched_num_scalars",
+    "sched_bytes_at_task", "sched_working_set_at_task", "sched_working_set_at_production",
+    "sched_working_set_at_realization", "sched_working_set_at_root", "total_parallelism",
+    "scheduling_count", "total_bytes_at_production", "total_vectors", "computation_efficiency",
+    "memory_pressure", "memory_utilization_ratio", "bytes_processing_rate", "bytes_per_parallelism",
+    "bytes_per_vector", "nodes_count", "edges_count", "node_edge_ratio", "nodes_per_schedule",
+    "op_diversity",
+    "op_add", "op_sub", "op_mul", "op_div", "op_mod", "op_eq", "op_ne", "op_lt", "op_le",
+    "op_or", "op_and", "op_not", "op_min", "op_max", "op_constant", "op_variable",
+    "op_funccall", "op_imagecall", "op_externcall", "op_let", "op_param",
+    "memory_transpose_0", "memory_transpose_1", "memory_transpose_2", "memory_transpose_3",
+    "memory_slice_0", "memory_slice_1", "memory_slice_2", "memory_slice_3",
+    "memory_broadcast_0", "memory_broadcast_1", "memory_broadcast_2", "memory_broadcast_3",
+    "memory_pointwise_0", "memory_pointwise_1", "memory_pointwise_2", "memory_pointwise_3"
 };
 
-template<>
-struct ModelWeight<true> : public GeneratorInput<Buffer<float>> {
-    GeneratorOutput<Buffer<float>> grad;
-
-    ModelWeight(const std::string &name, int dim)
-        : GeneratorInput<Buffer<float>>(name, dim), grad("updated_" + name, dim + 1) {
-    }
-    void backprop(const Derivative &d, const Expr &learning_rate, const Expr &timestep) {
-        std::vector<Expr> args(dimensions() + 1);
-        for (auto &e : args) {
-            e = Var();
-        }
-        grad(args) = undef<float>();
-
-        // We'll report back the new weights and the loss gradients,
-        // and update the ADAM state. Depending on the mode the caller
-        // is in, it may use the new weights, or it may just send the
-        // loss gradients up to an ADAM server.
-        args.back() = 0;
-        FuncRef new_weight = grad(args);
-        args.back() = 1;
-        FuncRef smoothed_deriv = grad(args);
-        args.back() = 2;
-        FuncRef smoothed_second_moment = grad(args);
-        args.back() = 3;
-        FuncRef loss_gradient = grad(args);
-
-        args.pop_back();
-        Expr current_weight = (*this)(args);
-
-        loss_gradient = d(*this)(args);
-
-        // Update the first and second moment estimates
-        smoothed_deriv = 0.9f * smoothed_deriv + 0.1f * loss_gradient;
-        smoothed_second_moment = 0.999f * smoothed_second_moment + 0.001f * pow(loss_gradient, 2);
-
-        // Correction to account for the fact that the smoothed_deriv
-        // and smoothed_second_moment start at zero when t == 0
-        Expr smoothed_deriv_correction = 1 / (1 - pow(0.9f, timestep + 1));
-        Expr smoothed_second_moment_correction = 1 / (1 - pow(0.999f, timestep + 1));
-
-        // Update the weights
-        Expr step = learning_rate * smoothed_deriv * smoothed_deriv_correction;
-        step /= sqrt(smoothed_second_moment * smoothed_second_moment_correction) + 1e-5f;
-
-        new_weight = current_weight - step;
-    }
-
-    void set_shape(int s0 = 0, int s1 = 0, int s2 = 0) {
-        if (s0) {
-            dim(0).set_bounds(0, s0);
-            dim(0).set_estimate(0, s0);
-            grad.dim(0).set_bounds(0, s0);
-            grad.dim(0).set_estimate(0, s0);
-            grad.bound(grad.args()[0], 0, s0);
-            grad.set_estimate(grad.args()[0], 0, s0);
-        }
-        if (s1) {
-            dim(1).set_bounds(0, s1);
-            dim(1).set_estimate(0, s1);
-            grad.dim(1).set_bounds(0, s1);
-            grad.dim(1).set_estimate(0, s1);
-            grad.bound(grad.args()[1], 0, s1);
-            grad.set_estimate(grad.args()[1], 0, s1);
-        }
-        if (s2) {
-            dim(2).set_bounds(0, s2);
-            dim(2).set_estimate(0, s2);
-            grad.dim(2).set_bounds(0, s2);
-            grad.dim(2).set_estimate(0, s2);
-            grad.bound(grad.args()[2], 0, s2);
-            grad.set_estimate(grad.args()[2], 0, s2);
-        }
-        grad.dim(dimensions()).set_bounds(0, 4);
-        grad.dim(dimensions()).set_estimate(0, 4);
-    }
+// Enhanced hardware-specific correction factors
+struct HardwareCorrectionFactors {
+    double base_correction;
+    double gpu_correction;
+    double scaling_factor;
+    double min_time_ms;
+    double high_threshold_ms;
+    double high_scaling;
 };
 
-template<bool training>
-class CostModel : public Generator<CostModel<training>> {
+const HardwareCorrectionFactors GPU_CORRECTION_FACTORS = {
+    0.28, 0.9, 0.95, 100.0, 500.0, 0.92
+};
+
+const HardwareCorrectionFactors CPU_CORRECTION_FACTORS = {
+    0.35, 1.0, 0.97, 50.0, 300.0, 0.94
+};
+
+// Category-specific correction factors
+struct CategoryCorrection {
+    double scale_factor;
+    double bias;
+    double confidence;
+    int sample_count;
+};
+
+// Simplified cost model using the pre-trained SimpleLSTMModel for inference
+class CostModel : public Generator<CostModel> {
 protected:
     bool allow_out_of_order_inputs_and_outputs() const override {
         return true;
     }
 
 public:
-    template<typename T>
-    using Input = GeneratorInput<T>;
-    template<typename T>
-    using Output = GeneratorOutput<T>;
-    using Generator<CostModel<training>>::using_autoscheduler;
-    using Generator<CostModel<training>>::get_pipeline;
+    using Input = GeneratorInput;
+    using Output = GeneratorOutput;
 
-    // Number of pipeline stages
-    Input<int> num_stages{"num_stages", 1};
-
-    // Batch size. Every item in the batch is a different schedule for
-    // the same algorithm.
+    // Inputs
     Input<int> batch_size{"batch_size", 1};
+    Input<std::string> json_file{"json_file"};  // Path to GraphRepresentation JSON output
+    Input<float> actual_runtime{"actual_runtime", -1.0f};  // Optional actual runtime for calibration
 
-    // Number of cores on the target machine. Used to reason about idle cores.
-    Input<int> num_cores{"num_cores", 1};
-
-    // Algorithm-specific features
-    Input<Buffer<float>> pipeline_features{"pipeline_features", 3};
-
-    // Schedule-specific features
-    Input<Buffer<float>> schedule_features{"schedule_features", 3};
-
-    // Network weights. We use some template-fu so that they are
-    // inputs in inference mode, and inputs and outputs in training
-    // mode.
-    using Weight = ModelWeight<training>;
-    Weight head1_filter{"head1_filter", 3};
-    Weight head1_bias{"head1_bias", 1};
-    Weight head2_filter{"head2_filter", 2};
-    Weight head2_bias{"head2_bias", 1};
-    Weight filter1{"filter1", 2};
-    Weight bias1{"bias1", 1};
-
-    // Some extra inputs for training mode.
-    Input<float> learning_rate{"learning_rate", 1.0f};
-    Input<int> timestep{"timestep", 0};  // Needed by ADAM
-
-    // The index of the fastest schedule in the batch. Used as a
-    // reference point for computing relative throughput.
-    Input<int> reference{"reference", 0};
-
-    // The true runtimes obtained by benchmarking.
-    Input<Buffer<float>> true_runtime{"true_runtime", 1};
-
-    // The predicted runtimes
+    // Output
     Output<Buffer<float>> prediction_output{"prediction_output", 1};
 
-    // The loss. L2 on relative throughput.
-    Output<Buffer<float>> loss_output{"loss_output", 0};
+    // PyTorch model and device
+    std::shared_ptr<torch::jit::script::Module> pytorch_model;
+    torch::Device device;
 
-    // Zero pad alone the last dimension of a Func
-    Func pad_stages(const Func &f, const Expr &stages) {
-        Halide::Region bounds(f.dimensions());
-        bounds[1].min = 0;
-        bounds[1].extent = stages;
-        return BoundaryConditions::constant_exterior(f, cast(f.value().type(), 0), bounds);
+    // Scaler parameters
+    std::vector<double> X_scalar_center;
+    std::vector<double> X_scalar_scale;
+    double y_center;
+    double y_scale;
+    std::vector<std::string> feature_columns;
+
+    // Calibration data
+    std::map<std::string, std::pair<double, double>> file_calibration;
+    std::map<std::string, CategoryCorrection> category_calibration;
+
+    // Constructor to initialize the PyTorch model and load scaler parameters
+    CostModel() {
+        // Determine device
+        bool is_gpu_available = torch::cuda::is_available();
+        device = is_gpu_available ? torch::Device(torch::kCUDA, 0) : torch::kCPU;
+        std::cout << (is_gpu_available ? "Using GPU" : "Using CPU") << std::endl;
+
+        // Load the PyTorch model
+        try {
+            pytorch_model = torch::jit::load("/path/to/simple_lstm_model.pt");
+            pytorch_model->to(device);
+            pytorch_model->eval();
+        } catch (const c10::Error& e) {
+            std::cerr << "Error loading the PyTorch model: " << e.what() << std::endl;
+            throw;
+        }
+
+        // Load scaler parameters
+        json scaler_params;
+        std::ifstream scaler_file("/path/to/scaler_params.json");
+        if (!scaler_file.is_open()) {
+            std::cerr << "Failed to open scaler_params.json" << std::endl;
+            throw;
+        }
+        scaler_file >> scaler_params;
+        scaler_file.close();
+        X_scalar_center = scaler_params["X_scalar_center"].get<std::vector<double>>();
+        X_scalar_scale = scaler_params["X_scalar_scale"].get<std::vector<double>>();
+        y_center = scaler_params["y_center"][0].get<double>();
+        y_scale = scaler_params["y_scale"][0].get<double>();
+        feature_columns = scaler_params["feature_columns"].get<std::vector<std::string>>();
     }
 
-    Expr activation(const Expr &e) {
-        // relu
-        return max(e, 0);
+    // Function to extract features from JSON data
+    std::map<std::string, double> extract_features(const json& json_data) {
+        std::map<std::string, double> features;
+
+        // Initialize features to 0
+        for (const auto& key : FIXED_FEATURES) {
+            features[key] = 0.0;
+        }
+
+        // Extract global features
+        auto global_features = json_data["global_features"];
+        features["cache_hits"] = global_features.value("cache_hits", 0.0);
+        features["cache_misses"] = global_features.value("cache_misses", 0.0);
+        features["execution_time_ms"] = global_features.value("execution_time_ms", 0.0);
+
+        // Aggregate node features
+        std::vector<json> nodes = json_data["nodes"];
+        std::map<std::string, double> op_histogram;
+        std::map<std::string, std::vector<double>> memory_patterns;
+        std::map<std::string, double> scheduling;
+
+        // Initialize operation histogram
+        for (const auto& op_key : {"Const", "Variable", "Param", "Add", "Sub", "Mod", "Mul", "Div",
+                                   "Min", "Max", "EQ", "NE", "LT", "LE", "And", "Or", "Not", "Select",
+                                   "ImageCall", "FuncCall", "SelfCall", "ExternCall", "Let"}) {
+            std::string op_lower = op_key;
+            std::transform(op_lower.begin(), op_lower.end(), op_lower.begin(), ::tolower);
+            op_histogram[op_lower] = 0.0;
+        }
+
+        // Initialize memory patterns
+        for (const auto& memory_key : {"Pointwise", "Transpose", "Broadcast", "Slice"}) {
+            std::string memory_lower = memory_key;
+            std::transform(memory_lower.begin(), memory_lower.end(), memory_lower.begin(), ::tolower);
+            memory_patterns[memory_lower] = std::vector<double>(4, 0.0);
+        }
+
+        // Initialize scheduling features
+        std::vector<std::string> scheduling_keys = {
+            "num_realizations", "num_productions", "points_computed_total", "innermost_loop_extent",
+            "inner_parallelism", "outer_parallelism", "bytes_at_realization", "bytes_at_production",
+            "bytes_at_root", "unique_bytes_read_per_realization", "working_set", "vector_size",
+            "num_vectors", "num_scalars", "bytes_at_task", "working_set_at_task", "working_set_at_production",
+            "working_set_at_realization", "working_set_at_root"
+        };
+        for (const auto& key : scheduling_keys) {
+            scheduling[key] = 0.0;
+        }
+
+        // Aggregate features across nodes
+        int node_count = 0;
+        for (const auto& node : nodes) {
+            json node_features = node["features"];
+            node_count++;
+
+            // Operation histogram
+            for (const auto& [op, count] : node_features["op_histogram"].items()) {
+                std::string op_lower = op;
+                std::transform(op_lower.begin(), op_lower.end(), op_lower.begin(), ::tolower);
+                op_histogram[op_lower] += count.get<double>();
+            }
+
+            // Memory patterns
+            for (const auto& [pattern, values] : node_features["memory_patterns"].items()) {
+                std::string pattern_lower = pattern;
+                std::transform(pattern_lower.begin(), pattern_lower.end(), pattern_lower.begin(), ::tolower);
+                auto json_values = values.get<std::vector<double>>();
+                for (size_t i = 0; i < json_values.size() && i < 4; ++i) {
+                    memory_patterns[pattern_lower][i] += json_values[i];
+                }
+            }
+
+            // Scheduling features
+            for (const auto& key : scheduling_keys) {
+                scheduling[key] += node_features["scheduling"].value(key, 0.0);
+            }
+        }
+
+        // Map features to FIXED_FEATURES
+        for (const auto& [op, count] : op_histogram) {
+            features["op_" + op] = count;
+        }
+        for (const auto& [pattern, values] : memory_patterns) {
+            for (size_t i = 0; i < 4; ++i) {
+                features["memory_" + pattern + "_" + std::to_string(i)] = values[i];
+            }
+        }
+        for (const auto& key : scheduling_keys) {
+            if (key == "inner_parallelism" || key == "outer_parallelism") {
+                features["sched_" + key] = node_count > 0 ? scheduling[key] / node_count : 0.0;
+            } else {
+                features["sched_" + key] = scheduling[key];
+            }
+        }
+
+        // Derived features
+        features["total_parallelism"] = features["sched_inner_parallelism"] + features["sched_outer_parallelism"];
+        features["scheduling_count"] = features["sched_num_realizations"] + features["sched_num_productions"];
+        features["total_bytes_at_production"] = features["sched_bytes_at_production"];
+        features["total_vectors"] = features["sched_num_vectors"];
+        double bytes_at_realization = features["sched_bytes_at_realization"];
+        features["computation_efficiency"] = (bytes_at_realization > 0) ? features["sched_points_computed_total"] / bytes_at_realization : 0.0;
+        double bytes_at_root = features["sched_bytes_at_root"];
+        features["memory_pressure"] = (bytes_at_root > 0) ? features["sched_working_set"] / bytes_at_root : 0.0;
+        double bytes_at_task = features["sched_bytes_at_task"];
+        features["memory_utilization_ratio"] = (bytes_at_task > 0) ? features["sched_unique_bytes_read_per_realization"] / bytes_at_task : 0.0;
+        double execution_time_ms = features["execution_time_ms"];
+        features["bytes_processing_rate"] = (execution_time_ms > 0) ? features["sched_bytes_at_realization"] / execution_time_ms : 0.0;
+        double total_parallelism = features["total_parallelism"];
+        features["bytes_per_parallelism"] = (total_parallelism > 0) ? features["sched_bytes_at_task"] / total_parallelism : 0.0;
+        double num_vectors = features["sched_num_vectors"];
+        features["bytes_per_vector"] = (num_vectors > 0) ? features["sched_bytes_at_realization"] / num_vectors : 0.0;
+        int nodes_count = nodes.size();
+        int edges_count = json_data["edges"].size();
+        features["nodes_count"] = nodes_count;
+        features["edges_count"] = edges_count;
+        features["node_edge_ratio"] = (edges_count > 0) ? static_cast<double>(nodes_count) / edges_count : static_cast<double>(nodes_count);
+        double scheduling_count = features["scheduling_count"];
+        features["nodes_per_schedule"] = (scheduling_count > 0) ? nodes_count / scheduling_count : 0.0;
+        int op_diversity = 0;
+        for (const auto& [key, value] : features) {
+            if (key.find("op_") == 0 && value > 0) {
+                op_diversity++;
+            }
+        }
+        features["op_diversity"] = op_diversity;
+
+        return features;
     }
 
-    Expr sigmoid(const Expr &e) {
-        return 1 / (1 + exp(-e));
+    // Function to compute complexity score from features
+    double compute_complexity_score(const std::map<std::string, double>& features) {
+        double complexity = 0.0;
+        complexity += features.at("nodes_count") * 0.01;
+        complexity += features.at("edges_count") * 0.005;
+        complexity += features.at("sched_points_computed_total") * 0.00001;
+        complexity += features.at("sched_num_vectors") * 0.01;
+        complexity += features.at("sched_working_set") * 0.0001;
+        complexity += features.at("sched_bytes_at_production") * 0.00005;
+        complexity += features.at("op_diversity") * 0.1;
+        return complexity;
+    }
+
+    // Function to determine file category
+    std::string get_file_category(const std::string& file_path, const std::map<std::string, double>& features) {
+        std::filesystem::path path(file_path);
+        std::string base_category;
+
+        if (path.has_parent_path()) {
+            base_category = path.parent_path().filename().string();
+        } else {
+            base_category = "unknown";
+        }
+
+        if (base_category == "unknown") {
+            double complexity = compute_complexity_score(features);
+            if (complexity > 100.0) {
+                return "unknown_complex";
+            } else if (complexity > 50.0) {
+                return "unknown_medium";
+            } else {
+                return "unknown_simple";
+            }
+        }
+
+        return base_category;
+    }
+
+    // Load category-specific calibration data
+    std::map<std::string, CategoryCorrection> load_category_calibration(const std::string& filename) {
+        std::map<std::string, CategoryCorrection> calibration_map;
+        std::ifstream file(filename);
+        if (!file.is_open()) {
+            std::cout << "No category calibration file found. Using default correction factors." << std::endl;
+            return calibration_map;
+        }
+
+        std::string line;
+        while (std::getline(file, line)) {
+            std::istringstream iss(line);
+            std::string category;
+            double scale_factor, bias, confidence;
+            int sample_count;
+            if (iss >> category >> scale_factor >> bias >> confidence >> sample_count) {
+                calibration_map[category] = {scale_factor, bias, confidence, sample_count};
+            }
+        }
+        return calibration_map;
+    }
+
+    // Save category-specific calibration data
+    void save_category_calibration(const std::string& filename, 
+                                   const std::map<std::string, CategoryCorrection>& calibration_map) {
+        std::ofstream file(filename);
+        if (!file.is_open()) {
+            std::cerr << "Failed to open category calibration file for writing." << std::endl;
+            return;
+        }
+
+        for (const auto& [category, correction] : calibration_map) {
+            file << category << " " << correction.scale_factor << " " << correction.bias 
+                 << " " << correction.confidence << " " << correction.sample_count << std::endl;
+        }
+    }
+
+    // Load file-specific calibration data
+    std::map<std::string, std::pair<double, double>> load_calibration_data(const std::string& filename) {
+        std::map<std::string, std::pair<double, double>> calibration_map;
+        std::ifstream file(filename);
+        if (!file.is_open()) {
+            std::cout << "No file-specific calibration file found. Using category-based corrections." << std::endl;
+            return calibration_map;
+        }
+
+        std::string line;
+        while (std::getline(file, line)) {
+            std::istringstream iss(line);
+            std::string filepath;
+            double scale_factor, bias;
+            if (iss >> filepath >> scale_factor >> bias) {
+                calibration_map[filepath] = std::make_pair(scale_factor, bias);
+            }
+        }
+        return calibration_map;
+    }
+
+    // Save file-specific calibration data
+    void save_calibration_data(const std::string& filename, 
+                               const std::map<std::string, std::pair<double, double>>& calibration_map) {
+        std::ofstream file(filename);
+        if (!file.is_open()) {
+            std::cerr << "Failed to open file-specific calibration file for writing." << std::endl;
+            return;
+        }
+
+        for (const auto& [filepath, factors] : calibration_map) {
+            file << filepath << " " << factors.first << " " << factors.second << std::endl;
+        }
+    }
+
+    // Update category-specific calibration data
+    void update_category_calibration(std::map<std::string, CategoryCorrection>& category_map,
+                                     const std::string& category, double raw_prediction, double actual_time) {
+        if (actual_time <= 0 || raw_prediction <= 0) return;
+
+        double error_pct = std::abs(actual_time - raw_prediction) / actual_time;
+        if (error_pct > 5.0) return;  // Skip outliers
+
+        double scale_factor = actual_time / raw_prediction;
+        double bias = 0.0;
+
+        auto it = category_map.find(category);
+        if (it != category_map.end()) {
+            double base_lr = 0.2;
+            double confidence = it->second.confidence;
+            int sample_count = it->second.sample_count;
+            double learning_rate = base_lr / (1.0 + 0.1 * std::log1p(sample_count));
+            if (confidence > 0.8) learning_rate *= 0.8;
+
+            double old_scale = it->second.scale_factor;
+            double old_bias = it->second.bias;
+            scale_factor = (1.0 - learning_rate) * old_scale + learning_rate * scale_factor;
+
+            double predicted = scale_factor * raw_prediction;
+            if (std::abs(predicted - actual_time) > 0.05 * actual_time) {
+                bias = (actual_time - predicted) * 0.5;
+                bias = (1.0 - learning_rate) * old_bias + learning_rate * bias;
+            } else {
+                bias = old_bias;
+            }
+
+            double accuracy = 1.0 - std::min(error_pct, 1.0);
+            double new_confidence = (confidence * sample_count + accuracy) / (sample_count + 1);
+            category_map[category] = {scale_factor, bias, new_confidence, sample_count + 1};
+        } else {
+            category_map[category] = {scale_factor, bias, 0.7, 1};
+        }
+
+        category_map[category].scale_factor = std::min(std::max(category_map[category].scale_factor, 0.1), 3.0);
+    }
+
+    // Update file-specific calibration data
+    void update_calibration_data(std::map<std::string, std::pair<double, double>>& calibration_map,
+                                 const std::string& file_path, double raw_prediction, double actual_time,
+                                 const std::map<std::string, CategoryCorrection>& category_map,
+                                 const std::string& category) {
+        if (actual_time <= 0 || raw_prediction <= 0) return;
+
+        double error_pct = std::abs(actual_time - raw_prediction) / actual_time;
+        if (error_pct > 3.0) {
+            auto cat_it = category_map.find(category);
+            if (cat_it != category_map.end() && cat_it->second.confidence > 0.7) {
+                calibration_map[file_path] = std::make_pair(cat_it->second.scale_factor, cat_it->second.bias);
+                return;
+            }
+        }
+
+        double scale_factor = actual_time / raw_prediction;
+        double bias = 0.0;
+        auto it = calibration_map.find(file_path);
+        if (it != calibration_map.end()) {
+            double learning_rate = 0.3;
+            double old_scale = it->second.first;
+            double old_bias = it->second.second;
+            scale_factor = (1.0 - learning_rate) * old_scale + learning_rate * scale_factor;
+
+            double predicted = scale_factor * raw_prediction;
+            if (std::abs(predicted - actual_time) > 0.1 * actual_time) {
+                bias = (actual_time - predicted) * 0.5;
+                bias = (1.0 - learning_rate) * old_bias + learning_rate * bias;
+            } else {
+                bias = old_bias;
+            }
+        }
+
+        scale_factor = std::min(std::max(scale_factor, 0.1), 3.0);
+        calibration_map[file_path] = std::make_pair(scale_factor, bias);
+    }
+
+    // Correct prediction with hardware, category, and file-specific factors
+    double correct_prediction(double raw_prediction, double actual_time, bool is_gpu,
+                              const HardwareCorrectionFactors& factors,
+                              const std::map<std::string, std::pair<double, double>>& file_calibration,
+                              const std::map<std::string, CategoryCorrection>& category_calibration,
+                              const std::string& file_path,
+                              const std::string& category,
+                              const std::map<std::string, double>& features) {
+        auto file_it = file_calibration.find(file_path);
+        if (file_it != file_calibration.end()) {
+            const auto& [scale_factor, bias] = file_it->second;
+            return std::max(scale_factor * raw_prediction + bias, 0.0);
+        }
+
+        auto cat_it = category_calibration.find(category);
+        if (cat_it != category_calibration.end() && cat_it->second.confidence > 0.6) {
+            const auto& correction = cat_it->second;
+            return std::max(correction.scale_factor * raw_prediction + correction.bias, 0.0);
+        }
+
+        double hw_correction = factors.base_correction;
+        if (is_gpu) hw_correction *= factors.gpu_correction;
+
+        if (category.find("unknown") != std::string::npos) {
+            double complexity = compute_complexity_score(features);
+            if (category == "unknown_complex") {
+                hw_correction *= 0.92;
+            } else if (category == "unknown_simple") {
+                hw_correction *= 1.05;
+            }
+            if (complexity > 150) {
+                hw_correction *= 0.95;
+            } else if (complexity < 20) {
+                hw_correction *= 1.03;
+            }
+        }
+
+        double corrected;
+        if (raw_prediction <= factors.min_time_ms) {
+            corrected = raw_prediction * hw_correction;
+        } else if (raw_prediction <= factors.high_threshold_ms) {
+            double base = factors.min_time_ms * hw_correction;
+            double excess = raw_prediction - factors.min_time_ms;
+            corrected = base + (excess * hw_correction * factors.scaling_factor);
+        } else {
+            double base = factors.min_time_ms * hw_correction;
+            double mid_excess = factors.high_threshold_ms - factors.min_time_ms;
+            double high_excess = raw_prediction - factors.high_threshold_ms;
+            corrected = base + 
+                        (mid_excess * hw_correction * factors.scaling_factor) +
+                        (high_excess * hw_correction * factors.scaling_factor * factors.high_scaling);
+        }
+
+        if (actual_time > 0) {
+            double blend_weight = 0.2;
+            corrected = (1.0 - blend_weight) * corrected + blend_weight * actual_time;
+        }
+
+        return std::max(corrected, 0.0);
     }
 
     void generate() {
-        Var c("c"), w("w"), n("n"), j("j"), s("s");
+        Var n("n");
 
-        Func normalized_schedule_features("normalized_schedule_features");
-        normalized_schedule_features(n, c, s) = fast_log(schedule_features(n, c, s) + 1);
+        // Step 1: Load calibration data
+        file_calibration = load_calibration_data("calibration_data.txt");
+        category_calibration = load_category_calibration("category_calibration.txt");
 
-        // Force the weights of the algorithm embedding layer to be positive and bounded.
-        Func squashed_head1_filter("squashed_head1_filter");
-        squashed_head1_filter(c, s, n) = sigmoid(head1_filter(c, s, n));
-
-        // Explicitly broadcast the weights across the batch. This
-        // give the autoscheduler some more options in the
-        // reverse-mode pipeline.
-        Func squashed_head1_filter_broadcast("squashed_head1_filter_broadcast");
-        squashed_head1_filter_broadcast(c, w, s, n) = squashed_head1_filter(c, s, n);
-
-        // The conv layer that embeds the algorithm-specific features.
-        Func head1_conv("head1_conv");
-        RDom r_head1(0, head1_w, 0, head1_h);
-        head1_conv(c, w) = head1_bias(c);
-        head1_conv(c, w) += (squashed_head1_filter_broadcast(c, w, r_head1.x, r_head1.y) *
-                             pipeline_features(r_head1.x, r_head1.y, w));
-
-        // No point in a relu - the inputs and weights are positive
-
-        // The conv layer that embeds the schedule-specific features.
-        Func head2_conv("head2_conv");
-        RDom r_head2(0, head2_w);
-        head2_conv(c, w, n) = head2_bias(c);
-        head2_conv(c, w, n) += head2_filter(c, r_head2) * normalized_schedule_features(n, r_head2, w);
-
-        Func head2_relu("head2_relu");
-        head2_relu(c, w, n) = activation(head2_conv(c, w, n));
-
-        // The conv layer that computes coefficients, split into two
-        // stages. First we consumer the algorithm embedding.
-        Func conv1_stage1("conv1_stage1");
-        RDom r1_stage1(0, head1_channels);
-        conv1_stage1(c, w) = bias1(c);
-        conv1_stage1(c, w) += filter1(c, r1_stage1.x) * head1_conv(r1_stage1.x, w);
-
-        // Then we consume the schedule embedding.
-        Func conv1_stage2("conv1_stage2");
-        RDom r1_stage2(0, head2_channels);
-        conv1_stage2(c, w, n) = conv1_stage1(c, w);
-        conv1_stage2(c, w, n) += filter1(c, head1_filter.dim(0).extent() + r1_stage2.x) * head2_relu(r1_stage2.x, w, n);
-
-        // The final set of predicted coefficients.
-        Func relu1("relu1");
-        relu1(c, w, n) = activation(conv1_stage2(c, w, n));
-
-        // That's the end of the neural network. Now we will use these
-        // coefficients with a bunch of hand-designed terms.
-
-        // Unpack all of the schedule features. We don't use all of
-        // them, but it's easier to avoid bugs if we just unpack them
-        // all in the same order as Featurization.h
-        int idx = 0;
-        Expr num_realizations = schedule_features(n, idx++, w);
-        Expr num_productions = schedule_features(n, idx++, w);
-        Expr points_computed_per_realization = schedule_features(n, idx++, w);
-        Expr points_computed_per_production = schedule_features(n, idx++, w);
-        Expr points_computed_total = schedule_features(n, idx++, w);
-        Expr points_computed_minimum = schedule_features(n, idx++, w);
-        Expr innermost_loop_extent = schedule_features(n, idx++, w);
-        Expr innermost_pure_loop_extent = schedule_features(n, idx++, w);
-        Expr unrolled_loop_extent = schedule_features(n, idx++, w);
-        Expr inner_parallelism = schedule_features(n, idx++, w);
-        Expr outer_parallelism = schedule_features(n, idx++, w);
-        Expr bytes_at_realization = schedule_features(n, idx++, w);
-        Expr bytes_at_production = schedule_features(n, idx++, w);
-        Expr bytes_at_root = schedule_features(n, idx++, w);
-        Expr innermost_bytes_at_realization = schedule_features(n, idx++, w);
-        Expr innermost_bytes_at_production = schedule_features(n, idx++, w);
-        Expr innermost_bytes_at_root = schedule_features(n, idx++, w);
-        Expr inlined_calls = schedule_features(n, idx++, w);
-        Expr unique_bytes_read_per_realization = schedule_features(n, idx++, w);
-        Expr unique_lines_read_per_realization = schedule_features(n, idx++, w);
-        Expr allocation_bytes_read_per_realization = schedule_features(n, idx++, w);
-        Expr working_set = schedule_features(n, idx++, w);
-        Expr vector_size = schedule_features(n, idx++, w);
-        Expr native_vector_size = schedule_features(n, idx++, w);
-        Expr num_vectors = schedule_features(n, idx++, w);
-        Expr num_scalars = schedule_features(n, idx++, w);
-        Expr scalar_loads_per_vector = schedule_features(n, idx++, w);
-        Expr vector_loads_per_vector = schedule_features(n, idx++, w);
-        Expr scalar_loads_per_scalar = schedule_features(n, idx++, w);
-        Expr bytes_at_task = schedule_features(n, idx++, w);
-        Expr innermost_bytes_at_task = schedule_features(n, idx++, w);
-        Expr unique_bytes_read_per_vector = schedule_features(n, idx++, w);
-        Expr unique_lines_read_per_vector = schedule_features(n, idx++, w);
-        Expr unique_bytes_read_per_task = schedule_features(n, idx++, w);
-        Expr unique_lines_read_per_task = schedule_features(n, idx++, w);
-        Expr working_set_at_task = schedule_features(n, idx++, w);
-        Expr working_set_at_production = schedule_features(n, idx++, w);
-        Expr working_set_at_realization = schedule_features(n, idx++, w);
-        Expr working_set_at_root = schedule_features(n, idx++, w);
-        assert(idx == head2_w);
-
-        // Count up the number of things computed, applying a
-        // different cost to vectors and scalars, and a different cost
-        // depending on whether we were inlined.
-        Expr compute_cost = select(inlined_calls == 0,
-                                   (vector_size * num_vectors * relu1(0, w, n) +
-                                    num_scalars * relu1(1, w, n)),
-                                   (vector_size * num_vectors * relu1(2, w, n) +
-                                    num_scalars * relu1(3, w, n)));
-
-        // Round up these costs according to how neatly we're using
-        // our cores.
-        Expr num_tasks = max(1, inner_parallelism * outer_parallelism);
-        Expr tasks_per_core = num_tasks / num_cores;
-        Expr idle_core_wastage = ceil(tasks_per_core) / max(1, tasks_per_core);
-        compute_cost *= idle_core_wastage;
-
-        // Next comes a long list of plausible terms to capture the cost of loads.
-        Expr load_cost = (num_realizations * unique_lines_read_per_realization * relu1(5, w, n) +
-                          num_realizations * unique_bytes_read_per_realization * relu1(6, w, n) +
-                          num_vectors * scalar_loads_per_vector * relu1(7, w, n) +
-                          num_scalars * scalar_loads_per_scalar * relu1(8, w, n) +
-                          num_vectors * vector_loads_per_vector * relu1(9, w, n) +
-                          num_scalars * unique_bytes_read_per_vector * relu1(10, w, n) +
-                          num_vectors * unique_bytes_read_per_vector * relu1(11, w, n) +
-                          num_scalars * unique_lines_read_per_vector * relu1(12, w, n) +
-                          num_vectors * unique_lines_read_per_vector * relu1(13, w, n) +
-                          num_tasks * unique_bytes_read_per_task * relu1(14, w, n) +
-                          num_tasks * unique_lines_read_per_task * relu1(15, w, n));
-
-        // Next we have the cost of stores.
-        Expr lines_written_per_realization = inner_parallelism * (bytes_at_task / max(1, innermost_bytes_at_task));
-
-        // Use separate coefficients for things with internal
-        // parallelism, because for stages with internal parallelism,
-        // most values of the values being stored will be consumed on
-        // another core, so they will get punted out to L3 no matter
-        // how small. Also use a separate term for the final stage, as
-        // we never pay the cost of loading from it.
-        Expr alpha = select(inner_parallelism > 1, relu1(16, w, n),
-                            w == 0, relu1(17, w, n),
-                            relu1(18, w, n));
-        Expr beta = select(inner_parallelism > 1, relu1(19, w, n),
-                           w == 0, relu1(20, w, n),
-                           relu1(21, w, n));
-
-        Expr store_cost = num_realizations * (lines_written_per_realization * alpha +
-                                              bytes_at_realization * beta);
-
-        // Now account for false sharing of cache lines. The
-        // probability of a store hitting a cache line also hit by
-        // another core is inversely proportional to
-        // innermost_bytes_at_task, and the cost is paid on every
-        // store.
-        Expr cost_of_false_sharing =
-            select(inner_parallelism > 1,
-                   relu1(22, w, n) * (num_vectors + num_scalars) / max(1, innermost_bytes_at_task),
-                   0.0f);
-
-        store_cost += cost_of_false_sharing;
-
-        // Now add a term for false sharing of pages. The maximum
-        // number of threads that could all fault on the same page at
-        // the same time is:
-        Expr max_threads_hitting_same_page_fault = min(inner_parallelism, 4096 / max(1, innermost_bytes_at_task));
-
-        // The total number of page faults is proportionate to the number of bytes allocated
-        const Expr &num_page_faults = bytes_at_production;
-
-        // And page faults are serviced serially, so the total CPU time gets multiplied by the thread count again!
-        Expr cost_of_page_faults = (num_page_faults * max_threads_hitting_same_page_fault *
-                                    inner_parallelism * outer_parallelism * relu1(23, w, n));
-
-        store_cost += cost_of_page_faults;
-
-        // Malloc is not free, so add a cost per allocation.
-        Expr cost_of_malloc = relu1(24, w, n) * num_realizations;
-
-        // A cost for launching a parallel task...
-        Expr cost_of_parallel_launches = num_productions * select(inner_parallelism > 1, relu1(25, w, n), 0.0f);
-
-        // ... and an overhead per task.
-        Expr cost_of_parallel_tasks = num_productions * (inner_parallelism - 1) * relu1(26, w, n);
-
-        Expr cost_of_parallelism = cost_of_parallel_tasks + cost_of_parallel_launches;
-
-        // Make it easier for the model to penalize working sets that
-        // start to fall out of cache by giving it a term that gets
-        // multiplied by the working set.
-        Expr cost_of_working_set = working_set * relu1(27, w, n);
-
-        // FIXME: For our best set of trained weights, store_cost was
-        // accidentally in the list below twice, so we double it here
-        // in order to not have to retrain.
-        store_cost *= 2;
-
-        Expr cost = (compute_cost +
-                     store_cost +
-                     load_cost +
-                     cost_of_malloc +
-                     cost_of_parallelism +
-                     cost_of_working_set);
-
-        for (int i = 0; i < 32; i++) {
-            cost += 0.0f * relu1(i, w, n);
+        // Step 2: Load and parse the JSON file
+        std::ifstream ifs(json_file);
+        if (!ifs.is_open()) {
+            std::cerr << "Error: Could not open JSON file " << json_file << std::endl;
+            throw;
         }
-
-        Func runtime_per_stage;
-        // Change units so that network weights are in a human-readable range.
-        runtime_per_stage(n, w) = cost * 1e-9f;
-
-        // Sum across the stages.
-        Func prediction;
-        RDom r_reduce(0, num_stages);
-        prediction(n) += runtime_per_stage(n, r_reduce);
-
-        prediction_output(n) = prediction(n);
-
-        Func err;
-
-        if (!training) {
-            loss_output() = 0.0f;
-        } else {
-
-            // The tail end of the reverse-mode pipeline
-            RDom r_batch(0, batch_size);
-
-            // We believe the coefficients on all the various
-            // components of cost should be positive, even before the
-            // relu, and even before schedule-specific features are
-            // taken into account. The network shouldn't be telling us
-            // that things would be cheaper if we would do more
-            // mallocs, or compute more values, or launch more
-            // parallel tasks. So we add a regularization term. This
-            // helps dead relus get unstuck.
-            RDom r_conv1_output(0, conv1_channels, 0, num_stages);
-            Expr regularize = sum(-min(conv1_stage2(r_conv1_output.x, r_conv1_output.y, n), 0));
-
-            // Our loss will be L2 on relative throughput.
-
-            // Get the reference runtime.
-            Expr n2 = clamp(reference, 0, batch_size - 1);
-            Expr scale = 1.0f / true_runtime(n2);
-
-            // Compute the relative true runtime and the relative predicted runtime
-            Expr p1 = prediction(n) * scale;
-            Expr r1 = true_runtime(n) * scale;
-
-            // Invert them to get relative throughput, and compute L2 loss.
-            Expr delta = pow(1.0f / max(p1, 1e-10f) - 1.0f / r1, 2);
-
-            // Add the regulization with a small weight.
-            err(n) = delta + 1e-5f * regularize;
-
-            // Sum the errors over the batch.
-            Expr loss = sum(err(r_batch));
-
-            loss_output() = loss;
-
-            // Compute derivatives of the loss, and backpropagate them
-            // to the model weights.
-            Derivative d_loss_d = propagate_adjoints(loss_output);
-
-            Weight *weights[] = {&head1_filter, &head1_bias,
-                                 &head2_filter, &head2_bias,
-                                 &filter1, &bias1};
-
-            for (Weight *w : weights) {
-                w->backprop(d_loss_d, learning_rate, timestep);
-            }
+        json graph_data;
+        try {
+            ifs >> graph_data;
+        } catch (const json::exception& e) {
+            std::cerr << "Error parsing JSON file " << json_file << ": " << e.what() << std::endl;
+            throw;
         }
+        ifs.close();
 
-        // All the model weight shapes are statically known, so we
-        // tell Halide their sizes to simplify the generated code.
-        head1_filter.set_shape(head1_channels, head1_w, head1_h);
-        head1_bias.set_shape(head1_channels);
-        head2_filter.set_shape(head2_channels, head2_w);
-        head2_bias.set_shape(head2_channels);
-        filter1.set_shape(conv1_channels, head1_channels + head2_channels);
-        bias1.set_shape(conv1_channels);
+        // Step 3: Extract features
+        auto features = extract_features(graph_data);
 
-        // Estimates for autoscheduling this pipeline (using
-        // itself!). We do that offline and check in the generated
-        // schedule source, so that bugs in our autoscheduler don't
-        // cause build nightmares due to the circular dependency.
-        num_cores.set_estimate(32);
-        reference.set_estimate(0);
-        batch_size.set_estimate(80);
-        num_stages.set_estimate(13);
-        prediction_output.set_estimates({{0, 80}});
-        learning_rate.set_estimate(0.001f);
-        timestep.set_estimate(37);
-        pipeline_features.set_estimates({{0, head1_w}, {0, head1_h}, {0, 13}});
-        schedule_features.set_estimates({{0, 80}, {0, head2_w}, {0, 13}});
-        true_runtime.set_estimates({{0, 80}});
+        // Step 4: Determine category
+        std::string category = get_file_category(json_file, features);
 
-        // SCHEDULE
-        if (training && !using_autoscheduler()) {
-            do_cost_model_schedule(get_pipeline());
-        } else if (using_autoscheduler()) {
-            // Do nothing.
-        } else {
-            // We just write down a good schedule for
-            // inference. Scheduling a couple of convs is easy.
-            Var no;
-            prediction_output.specialize(batch_size < 8).split(n, no, n, 1);
-            prediction_output.compute_root().split(n, no, n, 8).parallel(no);
-            prediction_output.bound(n, 0, batch_size);
+        // Step 5: Prepare inputs for the PyTorch model
+        int batch_size_val = batch_size;
+        const int sequence_length = 3;
+        const int seq_input_size = FIXED_FEATURES.size();
+        const int scalar_input_size = feature_columns.size();
 
-            // schedule for the forwards path
-            const int vec = 8;
+        std::vector<float> seq_input_data(batch_size_val * sequence_length * seq_input_size, 0.0f);
+        std::vector<float> scalar_input_data(batch_size_val * scalar_input_size, 0.0f);
 
-            // A helper function for scheduling conv layers
-            auto schedule_conv = [&](Func conv, Func relu, const RVar &r_channels) {
-                Var ci, wi;
-                if (!training) {
-                    relu
-                        .compute_at(prediction_output, n)
-                        .store_at(prediction_output, no)
-                        .tile(c, w, ci, wi, vec, 4, TailStrategy::RoundUp)
-                        .vectorize(ci);
-                    conv.compute_at(relu, c);
-                } else {
-                    // In training mode, we need the conv activations pre-relu too
-                    conv.in()
-                        .compute_root()
-                        .tile(c, w, ci, wi, vec, 1, TailStrategy::RoundUp)
-                        .vectorize(ci)
-                        .unroll(wi)
-                        .parallel(n, 8);
-                    conv.compute_at(conv.in(), c);
-                    relu
-                        .compute_root()
-                        .reorder_storage(c, w, n)
-                        .reorder(c, w, n)
-                        .vectorize(c, vec)
-                        .parallel(n, 8);
+        // Prepare seq_input
+        for (int b = 0; b < batch_size_val; b++) {
+            for (int t = 0; t < sequence_length; t++) {
+                int offset = (b * sequence_length + t) * seq_input_size;
+                for (size_t i = 0; i < FIXED_FEATURES.size(); i++) {
+                    seq_input_data[offset + i] = features[FIXED_FEATURES[i]];
                 }
-                conv
-                    .vectorize(c)
-                    .unroll(w)
-                    .update()
-                    .vectorize(c)
-                    .unroll(w)
-                    .reorder(c, w, r_channels);
-            };
-
-            // Pipeline features processing
-            conv1_stage1.compute_root().vectorize(c).update().vectorize(c);
-            squashed_head1_filter.compute_root().vectorize(c);
-
-            // Schedule features processing. The number of schedule
-            // features is not close to a multiple of 8, so vectorized
-            // across the batch.
-            if (!training) {
-                normalized_schedule_features
-                    .compute_at(prediction_output, no)
-                    .vectorize(n);
-            } else {
-                normalized_schedule_features
-                    .compute_root()
-                    .vectorize(n, 8);
             }
-
-            // conv+relu layers
-            schedule_conv(head2_conv, head2_relu, r_head2.x);
-            schedule_conv(conv1_stage2, relu1, r1_stage2.x);
         }
+
+        // Prepare scalar_input
+        for (int b = 0; b < batch_size_val; b++) {
+            int offset = b * scalar_input_size;
+            for (size_t i = 0; i < feature_columns.size(); i++) {
+                const auto& col = feature_columns[i];
+                if (col.substr(0, 4) == "log_") {
+                    std::string original_feature = col.substr(4);
+                    double value = features[original_feature];
+                    scalar_input_data[offset + i] = std::log1p(value);
+                } else {
+                    scalar_input_data[offset + i] = features[col];
+                }
+                // Apply RobustScaler
+                scalar_input_data[offset + i] = (scalar_input_data[offset + i] - X_scalar_center[i]) / X_scalar_scale[i];
+            }
+        }
+
+        // Step 6: Create PyTorch tensors
+        torch::Tensor seq_input_tensor = torch::from_blob(seq_input_data.data(),
+                                                         {batch_size_val, sequence_length, seq_input_size},
+                                                         torch::kFloat32);
+        torch::Tensor scalar_input_tensor = torch::from_blob(scalar_input_data.data(),
+                                                            {batch_size_val, scalar_input_size},
+                                                            torch::kFloat32);
+
+        // Move tensors to device
+        seq_input_tensor = seq_input_tensor.to(device);
+        scalar_input_tensor = scalar_input_tensor.to(device);
+
+        // Step 7: Run the PyTorch model
+        std::vector<torch::jit::IValue> inputs;
+        inputs.push_back(seq_input_tensor);
+        inputs.push_back(scalar_input_tensor);
+        torch::Tensor output_tensor;
+        try {
+            auto start = std::chrono::high_resolution_clock::now();
+            torch::NoGradGuard no_grad;
+            output_tensor = pytorch_model->forward(inputs).toTensor();
+            auto end = std::chrono::high_resolution_clock::now();
+            auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+            if (duration > 1000) {
+                std::cout << "Model inference took " << duration << "ms" << std::endl;
+            }
+        } catch (const c10::Error& e) {
+            if (device.is_cuda()) {
+                std::cout << "GPU inference failed, falling back to CPU" << std::endl;
+                device = torch::kCPU;
+                pytorch_model->to(device);
+                seq_input_tensor = seq_input_tensor.to(device);
+                scalar_input_tensor = scalar_input_tensor.to(device);
+                inputs = {seq_input_tensor, scalar_input_tensor};
+                try {
+                    torch::NoGradGuard no_grad;
+                    output_tensor = pytorch_model->forward(inputs).toTensor();
+                } catch (const c10::Error& e) {
+                    std::cerr << "Error during CPU fallback inference: " << e.what() << std::endl;
+                    throw;
+                }
+            } else {
+                std::cerr << "Error during model inference: " << e.what() << std::endl;
+                throw;
+            }
+        }
+
+        // Step 8: Convert PyTorch output to Halide
+        auto output_accessor = output_tensor.accessor<float, 2>();
+        Func predicted_scaled_runtime("predicted_scaled_runtime");
+        predicted_scaled_runtime(n) = 0.0f;
+        for (int b = 0; b < batch_size_val; b++) {
+            predicted_scaled_runtime(b) = output_accessor[b][0];
+        }
+
+        // Step 9: Inverse transform the output
+        Func predicted_transformed("predicted_transformed");
+        predicted_transformed(n) = predicted_scaled_runtime(n) * static_cast<float>(y_scale) + static_cast<float>(y_center);
+        Func raw_prediction("raw_prediction");
+        raw_prediction(n) = expm1(predicted_transformed(n));
+
+        // Step 10: Apply correction
+        Func corrected_prediction("corrected_prediction");
+        corrected_prediction(n) = 0.0f;
+        const HardwareCorrectionFactors& factors = device.is_cuda() ? GPU_CORRECTION_FACTORS : CPU_CORRECTION_FACTORS;
+        for (int b = 0; b < batch_size_val; b++) {
+            double raw_pred = evaluate(raw_prediction(b));
+            double corrected = correct_prediction(raw_pred, actual_runtime, device.is_cuda(),
+                                                  factors, file_calibration, category_calibration,
+                                                  json_file, category, features);
+            corrected_prediction(b) = static_cast<float>(corrected);
+        }
+
+        // Step 11: Update calibration if actual runtime is provided
+        if (actual_runtime > 0) {
+            for (int b = 0; b < batch_size_val; b++) {
+                double raw_pred = evaluate(raw_prediction(b));
+                double actual = evaluate(actual_runtime);
+                update_category_calibration(category_calibration, category, raw_pred, actual);
+                update_calibration_data(file_calibration, json_file, raw_pred, actual,
+                                       category_calibration, category);
+            }
+            save_calibration_data("calibration_data.txt", file_calibration);
+            save_category_calibration("category_calibration.txt", category_calibration);
+        }
+
+        // Step 12: Set the final output
+        prediction_output(n) = corrected_prediction(n);
+
+        // Step 13: Set estimates for autoscheduling
+        batch_size.set_estimate(1);
+        prediction_output.set_estimates({{0, 1}});
+
+        // Step 14: Simplified scheduling for inference
+        Var no;
+        prediction_output.compute_root().split(n, no, n, 8).parallel(no);
+        prediction_output.bound(n, 0, batch_size);
     }
 };
 
-using CostModelInference = CostModel<false>;
-using CostModelTraining = CostModel<true>;
-
-HALIDE_REGISTER_GENERATOR(CostModelInference, cost_model);
-HALIDE_REGISTER_GENERATOR(CostModelTraining, train_cost_model);
+HALIDE_REGISTER_GENERATOR(CostModel, cost_model);
