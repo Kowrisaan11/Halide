@@ -1,11 +1,25 @@
 #include "State.h"
+#include "ASLog.h"
+#include "CostModel.h"
+#include "GraphRepresentation.h"
+#include "LoopNest.h"
+#include <sstream>
 
 namespace Halide {
 namespace Internal {
 namespace Autoscheduler {
 
-using std::map;
-using std::pair;
+namespace {
+
+void dump_stages(const std::vector<std::pair<std::string, int>>& stages, std::ostream& os) {
+    bool first = true;
+    for (const auto& s : stages) {
+        if (!first) os << ", ";
+        os << s.first;
+        if (s.second != 0) os << ".update(" << s.second << ")";
+        first = false;
+    }
+}
 
 uint64_t State::structural_hash(int depth) const {
     uint64_t h = num_decisions_made;
@@ -13,10 +27,6 @@ uint64_t State::structural_hash(int depth) const {
     root->structural_hash(h, depth);
     return h;
 }
-
-//bool State::is_schedule_bad(const IntrusivePtr<LoopNest>& n) const {
-//    return n->max_inlined_calls() >= 7;
-//}
 
 void State::compute_featurization(const FunctionDAG &dag, const Adams2019Params &params,
                                   StageMap<ScheduleFeatures> *features, const CachingOptions &cache_options) {
@@ -97,112 +107,86 @@ void State::compute_featurization(const FunctionDAG &dag, const Adams2019Params 
     }
 }
 
-void State::save_featurization(const FunctionDAG &dag, const Adams2019Params &params,
-                               const CachingOptions &cache_options, std::ostream &out) {
+}  // namespace
+
+void State::dump(std::ostream& os) const {
+    os << "State cost: " << cost << "\n";
+    root->dump(os);
+    os << "\n";
+}
+
+uint64_t State::structural_hash(int depth) const {
+    uint64_t h = root->structural_hash(depth);
+    if (parent.defined() && depth > 0) {
+        h += parent->structural_hash(depth - 1);
+    }
+    return h;
+}
+
+void State::save_featurization(const GraphRepresentation& graph,
+                              const Adams2019Params& params,
+                              const CachingOptions& cache_options,
+                              std::ostream& out) const {
     StageMap<ScheduleFeatures> features;
-    compute_featurization(dag, params, &features, cache_options);
-
-    for (const auto &n : dag.nodes) {
-        if (n.is_input) {
-            continue;
-        }
-        for (size_t stage_idx = n.stages.size(); stage_idx > 0; stage_idx--) {
-            const auto &s = n.stages[stage_idx - 1];
-            const size_t num_schedule_features = ScheduleFeatures::num_features();
-            const size_t num_pipeline_features = PipelineFeatures::num_features();
-            const auto &sched_feat = features.get(&s);
-
-            float buf[num_schedule_features + num_pipeline_features];
-            // Save them as floats
-            for (size_t i = 0; i < num_schedule_features; i++) {
-                buf[i] = sched_feat[i];
+    compute_featurization(graph, params, &features, cache_options);
+    for (const auto& n : graph.nodes) {
+        for (size_t s = 0; s < n.stages.size(); s++) {
+            std::string name = n.stages[s].name;
+            const auto& f = features.get({n.stages[s].node, (int)s});
+            out << name << "\n";
+            for (int i = 0; i < ScheduleFeatures::num_features(); i++) {
+                out << f.features[i] << " ";
             }
-
-            for (size_t i = 0; i < num_pipeline_features; i++) {
-                buf[i + num_schedule_features] = s.features[i];
-            }
-
-            out.write((const char *)buf, sizeof(buf));
+            out << "\n";
         }
     }
 }
 
-bool State::calculate_cost(const FunctionDAG &dag, const Adams2019Params &params,
-                           CostModel *cost_model, const CachingOptions &cache_options,
-                           int verbosity) {
-    StageMap<ScheduleFeatures> features;
-    compute_featurization(dag, params, &features, cache_options);
+void State::compute_featurization(const GraphRepresentation& graph,
+                                 const Adams2019Params& params,
+                                 StageMap<ScheduleFeatures>* features,
+                                 const CachingOptions& cache_options) const {
+    std::vector<std::pair<std::string, int>> stage_ids;
+    root->get_stages(&stage_ids);
+    FeatureIntermediates intermediates;
+    root->compute_features(graph, stage_ids, params, features, cache_options, &intermediates);
+}
 
-    cost = 0.0f;
-
-    if (verbosity <= aslog::aslog_level()) {
-        for (auto it = features.begin(); it != features.end(); it++) {
-            const auto &stage = *(it.key());
-            const auto &feat = it.value();
-            aslog(verbosity) << "Schedule features for " << stage.stage.name() << "\n";
-            feat.dump(aslog(verbosity).get_ostream());
-        }
-    }
-
-    internal_assert(cost_model) << "calculate_cost received nullptr for cost_model\n";
-
-    // Perform some addition pruning before burdening the cost model with silly states
-    for (auto it = features.begin(); it != features.end(); it++) {
-        if (!it.key()->node->is_wrapper) {  // It's OK to repeatedly stage data
-            auto &feat = it.value();
-            if (feat.points_computed_total + feat.inlined_calls > 8 * feat.points_computed_minimum) {
-                cost = 1e50;
-                return false;
-            }
-        }
-    }
-
-    // Avoid code size explosion from recursive inlining.
-    if (root->max_inlined_calls() >= 256) {
-        cost = 1e50;
-        return false;
-    }
-
-    // Apply the hard limit on memory use
-    if (params.memory_limit >= 0) {
-        int64_t mem_used = (int64_t)features.begin().value().working_set_at_root;
-        for (auto it = features.begin(); it != features.end(); it++) {
-            if (it.key()->node->is_output ||
-                it.key()->node->is_input) {
-                // Not allocated by this pipeline
-                mem_used -= it.value().bytes_at_production;
-            }
-        }
-        if (mem_used > params.memory_limit) {
-            cost = 1e50;
-            return false;
-        }
-    }
-
-    // Tell the cost model about this state. It won't actually
-    // evaluate it until we call evaluate_costs (or if it runs out
-    // of internal buffer space), so that the evaluations can be
-    // batched.
-    cost_model->enqueue(dag, features, &cost);
-
+void State::calculate_cost(const GraphRepresentation& graph,
+                          const Adams2019Params& params,
+                          CostModel* cost_model,
+                          const CachingOptions& cache_options,
+                          int verbosity) {
+    static int64_t cost_calculations = 0;
     cost_calculations++;
-    return true;
+    StageMap<ScheduleFeatures> features;
+    compute_featurization(graph, params, &features, cache_options);
+    if (cost_model) {
+        cost_model->enqueue(graph, features, &cost);
+        if (verbosity > 0) {
+            aslog(verbosity) << "Predicted cost: " << cost << "\n";
+            for (const auto& n : graph.nodes) {
+                for (size_t s = 0; s < n.stages.size(); s++) {
+                    const auto& f = features.get({n.stages[s].node, (int)s});
+                    aslog(verbosity) << n.stages[s].name << ": ";
+                    for (int i = 0; i < ScheduleFeatures::num_features(); i++) {
+                        aslog(verbosity) << f.features[i] << " ";
+                    }
+                    aslog(verbosity) << "\n";
+                }
+            }
+        }
+    } else {
+        cost = 0;
+        for (const auto& n : graph.nodes) {
+            for (size_t s = 0; s < n.stages.size(); s++) {
+                const auto& f = features.get({n.stages[s].node, (int)s});
+                cost += f.features[0];
+            }
+        }
+    }
 }
 
-// Make a child copy of this state. The loop nest is const (we
-// make mutated copies of it, rather than mutating it), so we can
-// continue to point to the same one and so this is a cheap
-// operation.
-IntrusivePtr<State> State::make_child() const {
-    State *s = new State;
-    s->parent = this;
-    s->root = root;
-    s->cost = cost;
-    s->num_decisions_made = num_decisions_made;
-    return s;
-}
-
-// Generate the successor states to this state
 void State::generate_children(const FunctionDAG &dag,
                               const Adams2019Params &params,
                               CostModel *cost_model,
@@ -341,7 +325,7 @@ void State::generate_children(const FunctionDAG &dag,
                 vector_dims.push_back(v);
             }
             // Handle the case of full reductions that generate a scalar.
-            // We need at least one vector dimension to call cmopute_in_tiles
+            // We need at least one vector dimension to call compute_in_tiles
             // below.
             // TBD: figure out a better fallback strategy.
             if (vector_dims.empty()) {
@@ -378,325 +362,22 @@ void State::generate_children(const FunctionDAG &dag,
                     if (c->stage->index == 0) {
                         pure_size = &(c->size);
                     }
-                    should_parallelize = true;
                 }
             }
-        }
-
-        if (!should_parallelize) {
-            // The Func must be scalar, or not compute_root, or
-            // we're not asking to use multiple cores.  Just
-            // return a copy of the parent state
-            num_children++;
-            auto child = make_child();
-            child->num_decisions_made++;
-            accept_child(std::move(child));
-        } else {
-            internal_assert(pure_size);
-
-            if (cache->add_memoized_blocks(this, accept_child, node, num_children, dag, params, cost_model)) {
-                return;  // successfully added cached states.
-            }
-
-            // Generate some candidate parallel task shapes.
-            auto tilings = generate_tilings(*pure_size, node->dimensions - 1, 2, true);
-
-            // We could also just parallelize the outer loop entirely
-            std::vector<int64_t> ones;
-            ones.resize(pure_size->size(), 1);
-            tilings.emplace_back(std::move(ones));
-
-            // Sort / filter the options
-            struct Option {
-                vector<int64_t> tiling;
-                double idle_core_wastage;
-                bool entire;
-                bool operator<(const Option &other) const {
-                    return idle_core_wastage < other.idle_core_wastage;
-                }
-                // Ensure we don't accidentally copy this type
-                Option() = default;
-                Option(Option &&) = default;
-                Option &operator=(Option &&) = default;
-                Option(const Option &) = delete;
-                Option &operator=(const Option &) = delete;
-            };
-
-            vector<Option> options;
-            for (size_t i = 0; i < tilings.size(); i++) {
-                auto &t = tilings[i];
-                Option o;
-                o.entire = (i == tilings.size() - 1);
-
-                for (size_t j = 0; j < pure_size->size(); j++) {
-                    t[j] = ((*pure_size)[j] + t[j] - 1) / t[j];
-                }
-                t.swap(o.tiling);
-
-                // Compute max idle cores across the other stages of the Func
-                int64_t min_total = 0, max_total = 0;
-                o.idle_core_wastage = 1;
-                for (const auto &c : root->children) {
-                    if (c->node == node) {
-                        int64_t total = 1;
-                        for (const auto &l : c->stage->loop) {
-                            if (!l.rvar) {
-                                total *= o.tiling[l.pure_dim];
-                            }
-                        }
-                        if (min_total != 0) {
-                            min_total = std::min(min_total, total);
-                        } else {
-                            min_total = total;
-                        }
-                        max_total = std::max(max_total, total);
-                        const double tasks_per_core = ((double)total) / params.parallelism;
-                        o.idle_core_wastage = std::max(o.idle_core_wastage,
-                                                       std::ceil(tasks_per_core) /
-                                                           tasks_per_core);
-                    }
-                }
-
-                // Filter out the less useful options
-                bool ok =
-                    ((o.entire || min_total >= params.parallelism) &&
-                     (max_total <= params.parallelism * 16));
-
-                if (!ok) {
-                    continue;
-                }
-
-                options.emplace_back(std::move(o));
-            }
-            std::sort(options.begin(), options.end());
-
-            // If none of the options were acceptable, don't
-            // parallelize. This tends to happen for things like
-            // compute_root color matrices.
-            if (options.empty()) {
-                num_children++;
-                auto child = make_child();
-                child->num_decisions_made++;
-                accept_child(std::move(child));
-                return;
-            }
-
-            for (const auto &o : options) {
-                if (num_children >= 1 && (o.idle_core_wastage > 1.2 || params.disable_subtiling)) {
-                    // We have considered several options, and the
-                    // remaining ones leave lots of cores idle.
-                    break;
-                }
-
-                auto child = make_child();
-                LoopNest *new_root = new LoopNest;
-                new_root->copy_from(*root);
-                for (auto &c : new_root->children) {
-                    if (c->node == node) {
-                        if (!params.disable_subtiling) {
-                            c = c->parallelize_in_tiles(params, o.tiling, new_root);
-                        } else {
-                            // We're emulating the old
-                            // autoscheduler for an ablation, so
-                            // emulate its parallelism strategy:
-                            // just keep parallelizing outer loops
-                            // until enough are parallel.
-                            vector<int64_t> tiling = c->size;
-                            int64_t total = 1;
-                            for (size_t i = c->size.size(); i > 0; i--) {
-                                if (!c->stage->loop[i - 1].pure || total >= params.parallelism) {
-                                    tiling[i - 1] = 1;
-                                }
-                                while (tiling[i - 1] > 1 &&
-                                       total * tiling[i - 1] > params.parallelism * 8) {
-                                    tiling[i - 1] /= 2;
-                                }
-                                total *= tiling[i - 1];
-                            }
-                            c = c->parallelize_in_tiles(params, tiling, new_root);
-                        }
-                    }
-                }
-                child->root = new_root;
-                child->num_decisions_made++;
-                if (child->calculate_cost(dag, params, cost_model, cache->options)) {
-                    num_children++;
-                    accept_child(std::move(child));
-                    // Will early return if block caching is not enabled.
-                    cache->memoize_blocks(node, new_root);
-                }
-            }
-        }
-    }
-
-    if (num_children == 0) {
-        aslog(1) << "Warning: Found no legal way to schedule "
-                 << node->func.name() << " in the following State:\n";
-        dump(aslog(1).get_ostream());
-        // All our children died. Maybe other states have had
-        // children. Carry on.
-    }
-}
-
-void State::dump(std::ostream &os) const {
-    os << "State with cost " << cost << ":\n";
-    root->dump(os, "", nullptr);
-    os << schedule_source;
-}
-
-// Apply the schedule represented by this state to a Halide
-// Pipeline. Also generate source code for the schedule for the
-// user to copy-paste to freeze this schedule as permanent artifact.
-void State::apply_schedule(const FunctionDAG &dag, const Adams2019Params &params) {
-    StageMap<std::unique_ptr<LoopNest::StageScheduleState>> state_map;
-    root->apply(LoopLevel::root(), state_map, params.parallelism, 0, nullptr, nullptr);
-
-    std::ostringstream src;
-
-    // Print handles for all the Funcs
-    int i = (int)(dag.nodes.size() - 1);
-    for (const auto &n : dag.nodes) {
-        if (!n.is_input) {
-            src << "Func " << n.func.name() << " = pipeline.get_func(" << i << ");\n";
-        }
-        i--;
-    }
-
-    // Gather all Vars and RVars so that we can declare them in the emitted source
-    map<string, string> vars, rvars;
-    for (auto &p : state_map) {
-        for (auto &v : p.second->vars) {
-            if (v.exists) {
-                if (v.var.is_rvar) {
-                    rvars.emplace(v.var.name(), v.accessor);
-                } else {
-                    vars.emplace(v.var.name(), v.accessor);
-                }
-            }
-        }
-    }
-    if (!vars.empty()) {
-        for (const auto &p : vars) {
-            if (p.second.empty()) {
-                src << "Var " << p.first << "(\"" << p.first << "\");\n";
-            } else {
-                src << "Var " << p.first << "(" << p.second << ");\n";
-            }
-        }
-    }
-    if (!rvars.empty()) {
-        for (const auto &p : rvars) {
-            if (p.second.empty()) {
-                src << "RVar " << p.first << "(\"" << p.first << "\");\n";
-            } else {
-                src << "RVar " << p.first << "(" << p.second << ");\n";
-            }
-        }
-    }
-
-    for (auto &p : state_map) {
-        if (p.first->node->is_input) {
-            continue;
-        }
-
-        Stage stage(p.first->stage);
-
-        // Do all the reorders and pick which vars to
-        // parallelize.
-        vector<VarOrRVar> vars;
-        vector<VarOrRVar> parallel_vars;
-        bool any_parallel_vars = false, any_parallel_rvars = false;
-        for (auto it = p.second->vars.rbegin(); it != p.second->vars.rend(); it++) {
-            if (!it->exists || it->extent == 1) {
-                continue;
-            }
-            if (!it->parallel) {
-                break;
-            }
-            any_parallel_rvars |= it->var.is_rvar;
-            any_parallel_vars |= !it->var.is_rvar;
-            parallel_vars.push_back(it->var);
-        }
-
-        if (p.second->vars.size() > 1) {
-            p.second->schedule_source << "\n    .reorder(";
-            bool first = true;
-            for (auto &v : p.second->vars) {
-                if (v.exists) {
-                    vars.push_back(v.var);
-                    if (!first) {
-                        p.second->schedule_source << ", ";
-                    } else {
-                        p.second->schedule_source << "{";
-                    }
-                    first = false;
-                    p.second->schedule_source << v.var.name();
-                }
-            }
-            p.second->schedule_source << "})";
-            stage.reorder(vars);
-        }
-
-        // Halide doesn't let you fuse an RVar with a Var, even if
-        // they are both pure.
-        bool can_fuse = !(any_parallel_vars && any_parallel_rvars);
-        if (can_fuse) {
-            for (size_t i = 1; i < parallel_vars.size(); i++) {
-                // Outermost, and next outermost. Preserve the inner
-                // name to not invalidate any compute_ats.
-                p.second->schedule_source << "\n    .fuse(" << parallel_vars[i].name()
-                                          << ", " << parallel_vars[i - 1].name()
-                                          << ", " << parallel_vars[i].name() << ")";
-                stage.fuse(parallel_vars[i], parallel_vars[i - 1], parallel_vars[i]);
-            }
-            if (!parallel_vars.empty()) {
-                p.second->schedule_source << "\n    .parallel(" << parallel_vars.back().name() << ")";
-                stage.parallel(parallel_vars.back());
-            }
-        } else {
-            for (const auto &v : parallel_vars) {
-                p.second->schedule_source << "\n    .parallel(" << v.name() << ")";
-                stage.parallel(v);
-            }
-        }
-
-        // Reorder the vector dimension innermost
-        if (p.first->index == 0 && p.second->vector_dim > 0) {
-            vector<Var> storage_vars = Func(p.first->node->func).args();
-            for (int i = p.second->vector_dim; i > 0; i--) {
-                std::swap(storage_vars[i], storage_vars[i - 1]);
-            }
-            p.second->schedule_source << "\n    .reorder_storage(";
-            bool first = true;
-            for (const auto &v : storage_vars) {
-                if (!first) {
-                    p.second->schedule_source << ", ";
-                }
-                first = false;
-                p.second->schedule_source << v.name();
-            }
-            p.second->schedule_source << ")";
-            Func(p.first->node->func).reorder_storage(storage_vars);
-        }
-
-        // Dump the schedule source string
-        src << p.first->name
-            << p.second->schedule_source.str()
-            << ";\n";
-    }
-    // Sanitize the names of things to make them legal source code.
-    schedule_source = src.str();
-    bool in_quotes = false;
-    for (auto &c : schedule_source) {
-        in_quotes ^= (c == '"');
-        if (!in_quotes && c == '$') {
-            c = '_';
         }
     }
 }
 
-// Keep track of how many times we evaluated a state.
-int State::cost_calculations = 0;
+void State::apply_schedule(const GraphRepresentation& graph,
+                          const Adams2019Params& params) {
+    std::vector<std::string> schedule_source;
+    std::vector<std::pair<std::string, int>> stage_ids;
+    root->get_stages(&stage_ids);
+    root->apply(graph, stage_ids, params, &schedule_source);
+    for (const auto& s : schedule_source) {
+        this->schedule_source[s] = s;
+    }
+}
 
 }  // namespace Autoscheduler
 }  // namespace Internal

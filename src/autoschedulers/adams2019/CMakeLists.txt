@@ -54,8 +54,7 @@ add_autoscheduler(
     AutoSchedule.cpp
     Cache.cpp
     DefaultCostModel.cpp
-    GraphRepresentation.cpp
-    TreeRepresentation.cpp
+    GraphRepresentation.cpp  # Replaced FunctionDAG.cpp with GraphRepresentation.cpp
     LoopNest.cpp
     State.cpp
     Weights.cpp
@@ -63,7 +62,7 @@ add_autoscheduler(
 )
 
 target_include_directories(Halide_Adams2019 PRIVATE "${Halide_SOURCE_DIR}/src/autoschedulers/adams2019")
-target_link_libraries(Halide_Adams2019 PRIVATE adams2019_cost_model adams2019_train_cost_model)
+target_link_libraries(Halide_Adams2019 PRIVATE adams2019_cost_model adams2019_train_cost_model nlohmann_json::nlohmann_json)
 
 # Find and link nlohmann_json
 find_package(nlohmann_json REQUIRED)

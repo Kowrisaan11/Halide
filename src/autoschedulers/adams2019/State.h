@@ -1,75 +1,61 @@
 #ifndef STATE_H
 #define STATE_H
 
-#include "ASLog.h"
+#include <map>
+#include <string>
+#include <vector>
+
 #include "Cache.h"
 #include "CostModel.h"
-#include "DefaultCostModel.h"
-#include "Featurization.h"
+#include "GraphRepresentation.h"
 #include "Halide.h"
 #include "LoopNest.h"
-#include "PerfectHashMap.h"
-#include <map>
-#include <utility>
+#include "NetworkSize.h"
 
 namespace Halide {
 namespace Internal {
 namespace Autoscheduler {
 
-// A struct representing an intermediate state in the tree search.
-// It represents a partial schedule for some pipeline.
+struct Adams2019Params;
+
 struct State {
     mutable RefCount ref_count;
-    // The LoopNest this state corresponds to.
-    IntrusivePtr<const LoopNest> root;
-    // The parent that generated this state.
-    IntrusivePtr<const State> parent;
-    // Cost of this state, as evaluated by the cost model.
+    IntrusivePtr<State> parent;
+    IntrusivePtr<LoopNest> root;
+    IntrusivePtr<LoopNest> current;
+
+    std::map<std::string, std::string> schedule_source;
+
     double cost = 0;
-    // Number of decisions made at this state (used for finding which DAG node to schedule).
     int num_decisions_made = 0;
-    // Penalization is determined based on structural hash during beam search.
     bool penalized = false;
 
-    // The C++ source code of the generated schedule for this State.
-    // Computed if `apply_schedule` is called.
-    string schedule_source;
-
-    // The number of times a cost is enqueued into the cost model,
-    // for all states.
-    static int cost_calculations;
-
     State() = default;
-    State(const State &) = delete;
-    State(State &&) = delete;
-    void operator=(const State &) = delete;
-    void operator=(State &&) = delete;
+    State(const State& other) = delete;
+    State& operator=(const State& other) = delete;
+    State(State&& other) = delete;
+    State& operator=(State&& other) = delete;
 
-    // Compute a structural hash based on depth and num_decisions_made.
-    // Defers to root->structural_hash().
-    uint64_t structural_hash(int depth) const;
+    // Calls `compute_featurization` and prints those features to `out`.
+    void save_featurization(const GraphRepresentation& graph,
+                            const Adams2019Params& params,
+                            const CachingOptions& cache_options,
+                            std::ostream& out) const;
 
     // Compute the featurization of this state (based on `root`),
     // and store features in `features`. Defers to `root->compute_features()`.
-    void compute_featurization(const FunctionDAG &dag,
-                               const Adams2019Params &params,
-                               StageMap<ScheduleFeatures> *features,
-                               const CachingOptions &cache_options);
-
-    // Calls `compute_featurization` and prints those features to `out`.
-    void save_featurization(const FunctionDAG &dag,
-                            const Adams2019Params &params,
-                            const CachingOptions &cache_options,
-                            std::ostream &out);
+    void compute_featurization(const GraphRepresentation& graph,
+                              const Adams2019Params& params,
+                              StageMap<ScheduleFeatures>* features,
+                              const CachingOptions& cache_options) const;
 
     // Performs some pruning to decide if this state is worth queuing in
-    // the cost_model. If it is, calls `cost_model->enqueue` and returns true,
-    // otherwise sets `cost` equal to a large value and returns false.
-    bool calculate_cost(const FunctionDAG &dag, const Adams2019Params &params,
-                        CostModel *cost_model, const CachingOptions &cache_options,
-                        int verbosity = 99);
-
-//    bool is_schedule_bad(const IntrusivePtr<LoopNest>& n) const;
+    // the cost_model. If it is, calls `cost_model->enqueue` to compute the cost.
+    void calculate_cost(const GraphRepresentation& graph,
+                        const Adams2019Params& params,
+                        CostModel* cost_model,
+                        const CachingOptions& cache_options,
+                        int verbosity = 0);
 
     // Make a child copy of this state. The loop nest is const (we
     // make mutated copies of it, rather than mutating it), so we can
@@ -80,20 +66,24 @@ struct State {
     // Generate the successor states to this state.
     // If they are not pruned by `calculate_cost()`,
     // then calls `accept_child()` on them.
-    void generate_children(const FunctionDAG &dag,
-                           const Adams2019Params &params,
-                           CostModel *cost_model,
-                           std::function<void(IntrusivePtr<State> &&)> &accept_child,
-                           Cache *cache) const;
-
-    // Dumps cost, the `root` LoopNest, and then `schedule_source` to `os`.
-    void dump(std::ostream &os) const;
+    void generate_children(const GraphRepresentation& graph,
+                          const Adams2019Params& params,
+                          CostModel* cost_model,
+                          std::function<void(IntrusivePtr<State> &&)> &accept_child,
+                          Cache* cache) const;
 
     // Apply the schedule represented by this state to a Halide
     // Pipeline. Also generate source code for the schedule for the
     // user to copy-paste to freeze this schedule as permanent artifact.
     // Also fills `schedule_source`.
-    void apply_schedule(const FunctionDAG &dag, const Adams2019Params &params);
+    void apply_schedule(const GraphRepresentation& graph,
+                        const Adams2019Params& params);
+
+    // Computes a hash of the state structure for caching purposes.
+    uint64_t structural_hash(int depth) const;
+
+    // Dumps cost, the `root` LoopNest, and then `schedule_source` to `os`.
+    void dump(std::ostream& os) const;
 };
 
 }  // namespace Autoscheduler
