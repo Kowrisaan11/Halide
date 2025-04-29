@@ -14,6 +14,10 @@ uint64_t State::structural_hash(int depth) const {
     return h;
 }
 
+//bool State::is_schedule_bad(const IntrusivePtr<LoopNest>& n) const {
+//    return n->max_inlined_calls() >= 7;
+//}
+
 void State::compute_featurization(const FunctionDAG &dag, const Adams2019Params &params,
                                   StageMap<ScheduleFeatures> *features, const CachingOptions &cache_options) {
     StageMap<LoopNest::Sites> sites;
@@ -349,6 +353,11 @@ void State::generate_children(const FunctionDAG &dag,
         for (int vector_dim : vector_dims) {
             auto tile_options = root->compute_in_tiles(node, nullptr, params, vector_dim, false);
             for (IntrusivePtr<const LoopNest> &n : tile_options) {
+
+                if (root->max_inlined_calls() >= 7) {
+                    continue;
+                }
+                
                 auto child = make_child();
                 child->root = std::move(n);
                 child->num_decisions_made++;
