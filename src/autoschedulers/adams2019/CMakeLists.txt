@@ -9,10 +9,15 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # Define common directory
 set(COMMON_DIR "${Halide_SOURCE_DIR}/src/autoschedulers/common")
 
-# Find LibTorch
-set(Torch_DIR "/home/kowrisaan/jathu/libtorch/share/cmake/Torch")
+# Set LibTorch path explicitly
+set(Torch_DIR "/home/kowrisaan/fyp/libtorch/share/cmake/Torch")
 find_package(Torch REQUIRED)
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${TORCH_CXX_FLAGS}")
+
+# Add to target includes
+target_include_directories(adams2019_cost_model.generator PRIVATE 
+    ${TORCH_INCLUDE_DIRS}
+    # Other includes...
+)
 
 # Find nlohmann_json
 find_package(nlohmann_json REQUIRED)
