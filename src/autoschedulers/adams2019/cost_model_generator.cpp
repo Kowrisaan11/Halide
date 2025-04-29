@@ -104,7 +104,7 @@ public:
 
         // Load the PyTorch model
         try {
-            pytorch_model = torch::jit::load("/path/to/simple_lstm_model.pt");
+            pytorch_model = torch::jit::load("model.pt");
             pytorch_model->to(device);
             pytorch_model->eval();
         } catch (const c10::Error& e) {
@@ -114,7 +114,7 @@ public:
 
         // Load scaler parameters
         json scaler_params;
-        std::ifstream scaler_file("/path/to/scaler_params.json");
+        std::ifstream scaler_file("scaler_params.json");
         if (!scaler_file.is_open()) {
             std::cerr << "Failed to open scaler_params.json" << std::endl;
             throw;
