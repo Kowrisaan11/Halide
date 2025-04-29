@@ -2,6 +2,12 @@
 # Build rules for the Adams2019 autoscheduler library
 ##
 set(COMMON_DIR "${Halide_SOURCE_DIR}/src/autoschedulers/common")
+
+
+# Find LibTorch
+set(Torch_DIR "/home/kowrisaan/jathu/libtorch/share/cmake/Torch")
+find_package(Torch REQUIRED)
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${TORCH_CXX_FLAGS}")
 # =================================================================
 # weights
 set(WF_CPP baseline.cpp)
