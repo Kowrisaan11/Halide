@@ -69,6 +69,8 @@ struct State {
                         CostModel *cost_model, const CachingOptions &cache_options,
                         int verbosity = 99);
 
+//    bool is_schedule_bad(const IntrusivePtr<LoopNest>& n) const;
+
     // Make a child copy of this state. The loop nest is const (we
     // make mutated copies of it, rather than mutating it), so we can
     // continue to point to the same one and so this is a cheap
