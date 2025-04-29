@@ -1,8 +1,12 @@
 ##
 # Build rules for the Adams2019 autoscheduler library
 ##
-
 set(COMMON_DIR "${Halide_SOURCE_DIR}/src/autoschedulers/common")
+
+# Find LibTorch
+set(Torch_DIR "/home/kowrisaan/jathu/libtorch/share/cmake/Torch")
+find_package(Torch REQUIRED)
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${TORCH_CXX_FLAGS}")
 
 # =================================================================
 # weights
@@ -12,19 +16,16 @@ add_custom_command(OUTPUT ${WF_CPP}
                    COMMAND binary2cpp baseline_weights < baseline.weights > ${WF_CPP}
                    DEPENDS baseline.weights binary2cpp
                    VERBATIM)
-
 add_library(adams2019_weights_obj OBJECT ${WF_CPP})
 
 # cost_model, train_cost_model
 add_executable(adams2019_cost_model.generator cost_model_generator.cpp)
-target_link_libraries(adams2019_cost_model.generator PRIVATE Halide::Generator)
-
+target_link_libraries(adams2019_cost_model.generator PRIVATE Halide::Generator ${TORCH_LIBRARIES})
 add_halide_library(adams2019_cost_model FROM adams2019_cost_model.generator
                    GENERATOR cost_model
                    FUNCTION_NAME cost_model
                    FEATURES[x86-64-osx] avx2 sse41
                    FEATURES[arm-64-osx] arm_dot_prod-arm_fp16)
-
 add_halide_library(adams2019_train_cost_model FROM adams2019_cost_model.generator
                    GENERATOR train_cost_model
                    FUNCTION_NAME train_cost_model
@@ -39,15 +40,14 @@ if (WITH_UTILS)
                    Weights.cpp
                    retrain_cost_model.cpp
                    $<TARGET_OBJECTS:adams2019_weights_obj>)
-    target_include_directories(adams2019_retrain_cost_model PRIVATE "${Halide_SOURCE_DIR}/src/autoschedulers/adams2019")
-    target_link_libraries(adams2019_retrain_cost_model PRIVATE adams2019_cost_model adams2019_train_cost_model Halide::Plugin)
+    target_include_directories(adams2019_retrain_cost_model PRIVATE "${Halide_SOURCE_DIR}/src/autoschedulers/adams2019" ${TORCH_INCLUDE_DIRS})
+    target_link_libraries(adams2019_retrain_cost_model PRIVATE adams2019_cost_model adams2019_train_cost_model Halide::Plugin ${TORCH_LIBRARIES})
 endif ()
 
 # =================================================================
 ##
 # Main autoscheduler library
 ##
-
 add_autoscheduler(
     NAME Adams2019
     SOURCES
@@ -61,31 +61,35 @@ add_autoscheduler(
     Weights.cpp
     $<TARGET_OBJECTS:adams2019_weights_obj>
 )
-
-target_include_directories(Halide_Adams2019 PRIVATE "${Halide_SOURCE_DIR}/src/autoschedulers/adams2019")
-target_link_libraries(Halide_Adams2019 PRIVATE adams2019_cost_model adams2019_train_cost_model)
+target_include_directories(Halide_Adams2019 PRIVATE "${Halide_SOURCE_DIR}/src/autoschedulers/adams2019" ${TORCH_INCLUDE_DIRS})
+target_link_libraries(Halide_Adams2019 PRIVATE adams2019_cost_model adams2019_train_cost_model ${TORCH_LIBRARIES})
 
 # Find and link nlohmann_json
 find_package(nlohmann_json REQUIRED)
 target_link_libraries(Halide_Adams2019 PRIVATE nlohmann_json::nlohmann_json)
 
+# Add CUDA support if available
+if(TORCH_CUDA_LIBRARIES)
+    target_link_libraries(Halide_Adams2019 PRIVATE ${TORCH_CUDA_LIBRARIES})
+    if (WITH_UTILS)
+        target_link_libraries(adams2019_retrain_cost_model PRIVATE ${TORCH_CUDA_LIBRARIES})
+    endif()
+endif()
+
 # ====================================================
 # Auto-tuning support utilities.
-
 if (WITH_UTILS)
     add_executable(adams2019_weightsdir_to_weightsfile weightsdir_to_weightsfile.cpp Weights.cpp)
-    target_include_directories(adams2019_weightsdir_to_weightsfile PRIVATE ${COMMON_DIR})
-    target_link_libraries(adams2019_weightsdir_to_weightsfile PRIVATE Halide::Runtime)
+    target_include_directories(adams2019_weightsdir_to_weightsfile PRIVATE ${COMMON_DIR} ${TORCH_INCLUDE_DIRS})
+    target_link_libraries(adams2019_weightsdir_to_weightsfile PRIVATE Halide::Runtime ${TORCH_LIBRARIES})
 endif ()
 
 # =================================================================
 # Tests for private/internal functionality of Adams2019
-
 if (WITH_TESTS)
     add_executable(adams2019_test_graph_representation test_graph_representation.cpp GraphRepresentation.cpp)
-    target_include_directories(adams2019_test_graph_representation PRIVATE "${Halide_SOURCE_DIR}/src/autoschedulers/adams2019")
-    target_link_libraries(adams2019_test_graph_representation PRIVATE Halide::Plugin nlohmann_json::nlohmann_json)
-
+    target_include_directories(adams2019_test_graph_representation PRIVATE "${Halide_SOURCE_DIR}/src/autoschedulers/adams2019" ${TORCH_INCLUDE_DIRS})
+    target_link_libraries(adams2019_test_graph_representation PRIVATE Halide::Plugin nlohmann_json::nlohmann_json ${TORCH_LIBRARIES})
     add_test(NAME adams2019_test_graph_representation COMMAND adams2019_test_graph_representation)
     set_tests_properties(adams2019_test_graph_representation PROPERTIES LABELS "adams2019;autoschedulers_cpu")
 endif()
