@@ -458,12 +458,17 @@ IntrusivePtr<State> optimal_schedule(FunctionDAG &dag,
         num_passes = std::atoi(num_passes_str.c_str());
     }
 
+    Adams2019Params params3 = params;
+  
     for (int i = 0; i < num_passes; i++) {
+
+//      params3.beam_size = (int)(160/(7*i+5));
+       
         ProgressBar tick;
 
         Timer timer;
 
-        auto pass = optimal_schedule_pass(dag, outputs, params, cost_model,
+        auto pass = optimal_schedule_pass(dag, outputs, params3, cost_model,
                                           rng, i, num_passes, tick, permitted_hashes, &cache);
 
         std::chrono::duration<double> total_time = timer.elapsed();
