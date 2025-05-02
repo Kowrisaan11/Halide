@@ -4,6 +4,11 @@
 
 set(COMMON_DIR "${Halide_SOURCE_DIR}/src/autoschedulers/common")
 
+# LibTorch integration
+list(APPEND CMAKE_PREFIX_PATH "/home/kowrisaan/fyp/libtorch")
+find_package(Torch REQUIRED)
+message(STATUS "Found LibTorch: ${TORCH_INCLUDE_DIRS}")
+
 # =================================================================
 # weights
 set(WF_CPP baseline.cpp)
@@ -40,7 +45,7 @@ if (WITH_UTILS)
                    retrain_cost_model.cpp
                    $<TARGET_OBJECTS:adams2019_weights_obj>)
     target_include_directories(adams2019_retrain_cost_model PRIVATE "${Halide_SOURCE_DIR}/src/autoschedulers/adams2019")
-    target_link_libraries(adams2019_retrain_cost_model PRIVATE adams2019_cost_model adams2019_train_cost_model Halide::Plugin)
+    target_link_libraries(adams2019_retrain_cost_model PRIVATE adams2019_cost_model adams2019_train_cost_model Halide::Plugin ${TORCH_LIBRARIES})
 endif ()
 
 # =================================================================
@@ -61,8 +66,19 @@ add_autoscheduler(
     $<TARGET_OBJECTS:adams2019_weights_obj>
 )
 
-target_include_directories(Halide_Adams2019 PRIVATE "${Halide_SOURCE_DIR}/src/autoschedulers/adams2019")
-target_link_libraries(Halide_Adams2019 PRIVATE adams2019_cost_model adams2019_train_cost_model)
+target_include_directories(Halide_Adams2019 PRIVATE 
+    "${Halide_SOURCE_DIR}/src/autoschedulers/adams2019"
+    ${TORCH_INCLUDE_DIRS}
+)
+
+target_link_libraries(Halide_Adams2019 PRIVATE 
+    adams2019_cost_model 
+    adams2019_train_cost_model
+    ${TORCH_LIBRARIES}
+)
+
+# Set C++ standard for LibTorch
+set_property(TARGET Halide_Adams2019 PROPERTY CXX_STANDARD 14)
 
 # ====================================================
 # Auto-tuning support utilities.
