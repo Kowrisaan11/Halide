@@ -5,6 +5,14 @@ COMMON_DIR ?= $(realpath $(SRC)/../common/)
 
 HALIDE_DISTRIB_PATH ?= $(HALIDE_SRC_ROOT)/distrib
 
+# LibTorch integration
+LIBTORCH_PATH = /home/kowrisaan/fyp/libtorch
+CXXFLAGS += -I$(LIBTORCH_PATH)/include
+CXXFLAGS += -I$(LIBTORCH_PATH)/include/torch/csrc/api/include
+CXXFLAGS += -std=c++14  # LibTorch requires C++14 or higher
+LDFLAGS += -L$(LIBTORCH_PATH)/lib
+LIBS += -ltorch -lc10 -ltorch_cpu
+
 $(info Looking for Halide distro at $(HALIDE_DISTRIB_PATH). If this is incorrect, set the make variable HALIDE_DISTRIB_PATH)
 
 # Don't include an autoscheduler in the generator deps
@@ -85,7 +93,7 @@ $(BIN)/libautoschedule_adams2019.$(PLUGIN_EXT): \
 				$(BIN)/auto_schedule_runtime.a \
 				| $(LIB_HALIDE)
 	@mkdir -p $(@D)
-	$(CXX) -shared $(USE_EXPORT_DYNAMIC) -fPIC -fvisibility=hidden -fvisibility-inlines-hidden $(CXXFLAGS) $(OPTIMIZE) -I $(BIN)/cost_model $(filter-out %.h $(LIBHALIDE_LDFLAGS),$^) -o $@ $(HALIDE_SYSTEM_LIBS) $(HALIDE_RPATH_FOR_LIB) -I $(SRC)
+	$(CXX) -shared $(USE_EXPORT_DYNAMIC) -fPIC -fvisibility=hidden -fvisibility-inlines-hidden $(CXXFLAGS) $(OPTIMIZE) -I $(BIN)/cost_model $(filter-out %.h $(LIBHALIDE_LDFLAGS),$^) -o $@ $(HALIDE_SYSTEM_LIBS) $(LDFLAGS) $(LIBS) $(HALIDE_RPATH_FOR_LIB) -I $(SRC)
 
 $(BIN)/adams2019_retrain_cost_model: $(SRC)/retrain_cost_model.cpp \
 				$(COMMON_DIR)/ASLog.cpp \
@@ -99,7 +107,7 @@ $(BIN)/adams2019_retrain_cost_model: $(SRC)/retrain_cost_model.cpp \
 				$(AUTOSCHED_WEIGHT_OBJECTS) \
 				$(BIN)/auto_schedule_runtime.a
 	@mkdir -p $(@D)
-	$(CXX) $(CXXFLAGS) -frtti -Wall -I ../support -I $(BIN)/cost_model $(OPTIMIZE) $(filter-out %.h,$^) -o $@ $(LIBHALIDE_LDFLAGS) $(USE_OPEN_MP) $(HALIDE_RPATH_FOR_BIN) -I $(SRC)
+	$(CXX) $(CXXFLAGS) -frtti -Wall -I ../support -I $(BIN)/cost_model $(OPTIMIZE) $(filter-out %.h,$^) -o $@ $(LIBHALIDE_LDFLAGS) $(LDFLAGS) $(LIBS) $(USE_OPEN_MP) $(HALIDE_RPATH_FOR_BIN) -I $(SRC)
 
 $(BIN)/adams2019_weightsdir_to_weightsfile: $(SRC)/weightsdir_to_weightsfile.cpp $(SRC)/Weights.cpp
 	@mkdir -p $(@D)
