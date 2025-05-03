@@ -8,6 +8,7 @@
 #include <chrono>
 #include <cmath>
 #include <filesystem>
+#include <mutex>
 
 #include "Halide.h"
 
@@ -94,6 +95,9 @@ public:
     std::map<std::string, std::pair<double, double>> file_calibration;
     std::map<std::string, CategoryCorrection> category_calibration;
 
+    // Mutex for file writing
+    std::mutex file_mutex;
+
     // Constructor to initialize the PyTorch model and load scaler parameters
     CostModel() {
         // Initialize device
@@ -126,6 +130,16 @@ public:
         y_center = scaler_params["y_center"][0].get<double>();
         y_scale = scaler_params["y_scale"][0].get<double>();
         feature_columns = scaler_params["feature_columns"].get<std::vector<std::string>>();
+
+        // Validate scaler parameters
+        if (X_scalar_center.size() != X_scalar_scale.size() || 
+            X_scalar_center.size() != feature_columns.size()) {
+            std::cerr << "Scaler parameter size mismatch: "
+                      << "X_scalar_center(" << X_scalar_center.size() << "), "
+                      << "X_scalar_scale(" << X_scalar_scale.size() << "), "
+                      << "feature_columns(" << feature_columns.size() << ")" << std::endl;
+            throw std::runtime_error("Invalid scaler parameters");
+        }
     }
 
     // Function to extract features from JSON data
@@ -135,6 +149,12 @@ public:
         // Initialize features to 0
         for (const auto& key : FIXED_FEATURES) {
             features[key] = 0.0;
+        }
+
+        // Check if required keys exist
+        if (!json_data.contains("global_features") || !json_data.contains("nodes") || !json_data.contains("edges")) {
+            std::cerr << "JSON data missing required keys: global_features, nodes, or edges" << std::endl;
+            return features; // Return default features
         }
 
         // Extract global features
@@ -180,29 +200,40 @@ public:
         // Aggregate features across nodes
         int node_count = 0;
         for (const auto& node : nodes) {
+            if (!node.contains("features")) continue;
             json node_features = node["features"];
             node_count++;
 
             // Operation histogram
-            for (const auto& [op, count] : node_features["op_histogram"].items()) {
-                std::string op_lower = op;
-                std::transform(op_lower.begin(), op_lower.end(), op_lower.begin(), ::tolower);
-                op_histogram[op_lower] += count.get<double>();
+            if (node_features.contains("op_histogram")) {
+                for (const auto& [op, count] : node_features["op_histogram"].items()) {
+                    std::string op_lower = op;
+                    std::transform(op_lower.begin(), op_lower.end(), op_lower.begin(), ::tolower);
+                    if (op_histogram.count(op_lower)) {
+                        op_histogram[op_lower] += count.get<double>();
+                    }
+                }
             }
 
             // Memory patterns
-            for (const auto& [pattern, values] : node_features["memory_patterns"].items()) {
-                std::string pattern_lower = pattern;
-                std::transform(pattern_lower.begin(), pattern_lower.end(), pattern_lower.begin(), ::tolower);
-                auto json_values = values.get<std::vector<double>>();
-                for (size_t i = 0; i < json_values.size() && i < 4; ++i) {
-                    memory_patterns[pattern_lower][i] += json_values[i];
+            if (node_features.contains("memory_patterns")) {
+                for (const auto& [pattern, values] : node_features["memory_patterns"].items()) {
+                    std::string pattern_lower = pattern;
+                    std::transform(pattern_lower.begin(), pattern_lower.end(), pattern_lower.begin(), ::tolower);
+                    if (memory_patterns.count(pattern_lower)) {
+                        auto json_values = values.get<std::vector<double>>();
+                        for (size_t i = 0; i < json_values.size() && i < 4; ++i) {
+                            memory_patterns[pattern_lower][i] += json_values[i];
+                        }
+                    }
                 }
             }
 
             // Scheduling features
-            for (const auto& key : scheduling_keys) {
-                scheduling[key] += node_features["scheduling"].value(key, 0.0);
+            if (node_features.contains("scheduling")) {
+                for (const auto& key : scheduling_keys) {
+                    scheduling[key] += node_features["scheduling"].value(key, 0.0);
+                }
             }
         }
 
@@ -302,6 +333,7 @@ public:
         std::ifstream file(filename);
         if (!file.is_open()) {
             std::cout << "No category calibration file found. Using default correction factors." << std::endl;
+            calibration_map["default"] = {1.0, 0.0, 0.7, 1}; // Default calibration
             return calibration_map;
         }
 
@@ -321,6 +353,7 @@ public:
     // Save category-specific calibration data
     void save_category_calibration(const std::string& filename, 
                                    const std::map<std::string, CategoryCorrection>& calibration_map) {
+        std::lock_guard<std::mutex> lock(file_mutex);
         std::ofstream file(filename);
         if (!file.is_open()) {
             std::cerr << "Failed to open category calibration file for writing." << std::endl;
@@ -339,6 +372,7 @@ public:
         std::ifstream file(filename);
         if (!file.is_open()) {
             std::cout << "No file-specific calibration file found. Using category-based corrections." << std::endl;
+            calibration_map["default"] = std::make_pair(1.0, 0.0); // Default calibration
             return calibration_map;
         }
 
@@ -357,6 +391,7 @@ public:
     // Save file-specific calibration data
     void save_calibration_data(const std::string& filename, 
                                const std::map<std::string, std::pair<double, double>>& calibration_map) {
+        std::lock_guard<std::mutex> lock(file_mutex);
         std::ofstream file(filename);
         if (!file.is_open()) {
             std::cerr << "Failed to open file-specific calibration file for writing." << std::endl;
@@ -519,14 +554,16 @@ public:
         std::ifstream ifs(json_file);
         if (!ifs.is_open()) {
             std::cerr << "Error: Could not open JSON file " << json_file << std::endl;
-            throw;
+            prediction_output(n) = 0.0f; // Default output
+            return;
         }
         json graph_data;
         try {
             ifs >> graph_data;
         } catch (const json::exception& e) {
             std::cerr << "Error parsing JSON file " << json_file << ": " << e.what() << std::endl;
-            throw;
+            prediction_output(n) = 0.0f; // Default output
+            return;
         }
         ifs.close();
 
@@ -538,6 +575,11 @@ public:
 
         // Step 5: Prepare inputs for the PyTorch model
         int batch_size_val = evaluate<int>(batch_size);
+        if (batch_size_val <= 0) {
+            std::cerr << "Invalid batch_size: " << batch_size_val << std::endl;
+            prediction_output(n) = 0.0f; // Default output
+            return;
+        }
         const int sequence_length = 3;
         const int seq_input_size = FIXED_FEATURES.size();
         const int scalar_input_size = feature_columns.size();
@@ -599,7 +641,7 @@ public:
             }
         } catch (const c10::Error& e) {
             if (device.is_cuda()) {
-                std::cout << "GPU inference failed, falling back to CPU" << std::endl;
+                std::cout << "GPU inference failed: " << e.what() << ". Falling back to CPU" << std::endl;
                 device = torch::kCPU;
                 pytorch_model->to(device);
                 seq_input_tensor = seq_input_tensor.to(device);
@@ -610,11 +652,13 @@ public:
                     output_tensor = pytorch_model->forward(inputs).toTensor();
                 } catch (const c10::Error& e) {
                     std::cerr << "Error during CPU fallback inference: " << e.what() << std::endl;
-                    throw;
+                    prediction_output(n) = 0.0f; // Default output
+                    return;
                 }
             } else {
                 std::cerr << "Error during model inference: " << e.what() << std::endl;
-                throw;
+                prediction_output(n) = 0.0f; // Default output
+                return;
             }
         }
 
@@ -626,11 +670,12 @@ public:
             predicted_scaled_runtime(b) = output_accessor[b][0];
         }
 
-        // Step 9: Inverse transform the output
+        // Step 9: Inverse transform the output with clamping
         Func predicted_transformed("predicted_transformed");
         predicted_transformed(n) = predicted_scaled_runtime(n) * static_cast<float>(y_scale) + static_cast<float>(y_center);
         Func raw_prediction("raw_prediction");
-        raw_prediction(n) = exp(predicted_transformed(n)) - 1.0f; // Use Halide's exp instead of expm1
+        Expr clamped_input = clamp(predicted_transformed(n), -50.0f, 50.0f); // Prevent exp overflow
+        raw_prediction(n) = exp(clamped_input) - 1.0f;
 
         // Step 10: Apply correction
         Func corrected_prediction("corrected_prediction");
@@ -662,7 +707,7 @@ public:
 
         // Step 13: Set estimates for autoscheduling
         batch_size.set_estimate(1);
-        prediction_output.set_estimates({{0, 1}});
+        prediction_output.set_estimates({{0, batch_size_val}});
 
         // Step 14: Simplified scheduling for inference
         Var no;
