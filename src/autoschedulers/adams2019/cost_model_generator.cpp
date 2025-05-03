@@ -74,8 +74,7 @@ public:
     // Inputs
     GeneratorInput<Buffer<float>> input_buffer{"input_buffer", 3};
     GeneratorInput<int> batch_size{"batch_size", 1};
-    // Replace std::string GeneratorParam with a file path input
-    GeneratorInput<Buffer<uint8_t>> json_file_buffer{"json_file_buffer", 1};
+    // Remove the std::string GeneratorParam and use environment variable instead
     GeneratorInput<float> actual_runtime{"actual_runtime", -1.0f};
 
     // Output
