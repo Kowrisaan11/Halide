@@ -117,7 +117,7 @@ public:
 
         // Load scaler parameters
         json scaler_params;
-        std::ifstream scaler_file("scaler_params.json");
+        std::ifstream scaler_file("/home/kowrisaan/fyp/Halide/src/autoschedulers/adams2019/scaler_params.json");
         if (!scaler_file.is_open()) {
             std::cerr << "Failed to open scaler_params.json" << std::endl;
             throw;
