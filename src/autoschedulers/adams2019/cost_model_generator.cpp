@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <filesystem>
 
 #include "Halide.h"
 
@@ -69,21 +70,18 @@ protected:
     }
 
 public:
-    // Fix: Specify template parameters for Input and Output
-    using Input = GeneratorInput<Buffer<float>, int, float, std::string>;
-    using Output = GeneratorOutput<Buffer<float>>;
-
     // Inputs
-    Input<int> batch_size{"batch_size", 1};
-    Input<std::string> json_file{"json_file"};  // Path to GraphRepresentation JSON output
-    Input<float> actual_runtime{"actual_runtime", -1.0f};  // Optional actual runtime for calibration
+    GeneratorInput<Buffer<float>> input_buffer{"input_buffer", 3}; // Example buffer input
+    GeneratorInput<int> batch_size{"batch_size", 1};
+    GeneratorInput<std::string> json_file{"json_file"};
+    GeneratorInput<float> actual_runtime{"actual_runtime", -1.0f};
 
     // Output
-    Output<Buffer<float>> prediction_output{"prediction_output", 1};
+    GeneratorOutput<Buffer<float>> prediction_output{"prediction_output", 1};
 
     // PyTorch model and device
     std::shared_ptr<torch::jit::Module> pytorch_model;
-    torch::Device device; // Will initialize in constructor
+    torch::Device device;
 
     // Scaler parameters
     std::vector<double> X_scalar_center;
@@ -98,14 +96,13 @@ public:
 
     // Constructor to initialize the PyTorch model and load scaler parameters
     CostModel() {
-        // Fix: Initialize device with explicit type
+        // Initialize device
         bool is_gpu_available = torch::cuda::is_available();
-        device = is_gpu_available ? torch::Device(torch::kCUDA, 0) : torch::Device(torch::kCPU);
+        device = torch::Device(is_gpu_available ? torch::kCUDA : torch::kCPU);
         std::cout << (is_gpu_available ? "Using GPU" : "Using CPU") << std::endl;
 
         // Load the PyTorch model
         try {
-            // Fix: Use std::make_shared for proper shared_ptr initialization
             pytorch_model = std::make_shared<torch::jit::Module>(torch::jit::load("model.pt"));
             pytorch_model->to(device);
             pytorch_model->eval();
@@ -519,18 +516,16 @@ public:
         category_calibration = load_category_calibration("category_calibration.txt");
 
         // Step 2: Load and parse the JSON file
-        // Fix: Extract string value from GeneratorInput
-        std::ifstream ifs(json_file.get());
+        std::ifstream ifs(json_file);
         if (!ifs.is_open()) {
-            // Fix: Use .get() to extract the string value
-            std::cerr << "Error: Could not open JSON file " << json_file.get() << std::endl;
+            std::cerr << "Error: Could not open JSON file " << json_file << std::endl;
             throw;
         }
         json graph_data;
         try {
             ifs >> graph_data;
         } catch (const json::exception& e) {
-            std::cerr << "Error parsing JSON file " << json_file.get() << ": " << e.what() << std::endl;
+            std::cerr << "Error parsing JSON file " << json_file << ": " << e.what() << std::endl;
             throw;
         }
         ifs.close();
@@ -539,10 +534,10 @@ public:
         auto features = extract_features(graph_data);
 
         // Step 4: Determine category
-        std::string category = get_file_category(json_file.get(), features);
+        std::string category = get_file_category(json_file, features);
 
         // Step 5: Prepare inputs for the PyTorch model
-        int batch_size_val = batch_size;
+        int batch_size_val = evaluate<int>(batch_size);
         const int sequence_length = 3;
         const int seq_input_size = FIXED_FEATURES.size();
         const int scalar_input_size = feature_columns.size();
@@ -555,7 +550,7 @@ public:
             for (int t = 0; t < sequence_length; t++) {
                 int offset = (b * sequence_length + t) * seq_input_size;
                 for (size_t i = 0; i < FIXED_FEATURES.size(); i++) {
-                    seq_input_data[offset + i] = features[FIXED_FEATURES[i]];
+                    seq_input_data[offset + i] = static_cast<float>(features[FIXED_FEATURES[i]]);
                 }
             }
         }
@@ -565,12 +560,13 @@ public:
             int offset = b * scalar_input_size;
             for (size_t i = 0; i < feature_columns.size(); i++) {
                 const auto& col = feature_columns[i];
+                double value = features[col];
                 if (col.substr(0, 4) == "log_") {
                     std::string original_feature = col.substr(4);
-                    double value = features[original_feature];
-                    scalar_input_data[offset + i] = std::log1p(value);
+                    value = features[original_feature];
+                    scalar_input_data[offset + i] = static_cast<float>(std::log1p(value));
                 } else {
-                    scalar_input_data[offset + i] = features[col];
+                    scalar_input_data[offset + i] = static_cast<float>(value);
                 }
                 // Apply RobustScaler
                 scalar_input_data[offset + i] = (scalar_input_data[offset + i] - X_scalar_center[i]) / X_scalar_scale[i];
@@ -590,9 +586,7 @@ public:
         scalar_input_tensor = scalar_input_tensor.to(device);
 
         // Step 7: Run the PyTorch model
-        std::vector<torch::jit::IValue> inputs;
-        inputs.push_back(seq_input_tensor);
-        inputs.push_back(scalar_input_tensor);
+        std::vector<torch::jit::IValue> inputs = {seq_input_tensor, scalar_input_tensor};
         torch::Tensor output_tensor;
         try {
             auto start = std::chrono::high_resolution_clock::now();
@@ -636,27 +630,27 @@ public:
         Func predicted_transformed("predicted_transformed");
         predicted_transformed(n) = predicted_scaled_runtime(n) * static_cast<float>(y_scale) + static_cast<float>(y_center);
         Func raw_prediction("raw_prediction");
-        raw_prediction(n) = expm1(predicted_transformed(n));
+        raw_prediction(n) = exp(predicted_transformed(n)) - 1.0f; // Use Halide's exp instead of expm1
 
         // Step 10: Apply correction
         Func corrected_prediction("corrected_prediction");
         corrected_prediction(n) = 0.0f;
         const HardwareCorrectionFactors& factors = device.is_cuda() ? GPU_CORRECTION_FACTORS : CPU_CORRECTION_FACTORS;
+        float actual_time = evaluate<float>(actual_runtime);
         for (int b = 0; b < batch_size_val; b++) {
-            double raw_pred = evaluate(raw_prediction(b));
-            double corrected = correct_prediction(raw_pred, actual_runtime, device.is_cuda(),
-                                                  factors, file_calibration, category_calibration,
-                                                  json_file.get(), category, features);
+            float raw_pred = evaluate<float>(raw_prediction(b));
+            double corrected = correct_prediction(raw_pred, actual_time, device.is_cuda(),
+                                                 factors, file_calibration, category_calibration,
+                                                 json_file, category, features);
             corrected_prediction(b) = static_cast<float>(corrected);
         }
 
         // Step 11: Update calibration if actual runtime is provided
-        if (actual_runtime > 0) {
+        if (actual_time > 0) {
             for (int b = 0; b < batch_size_val; b++) {
-                double raw_pred = evaluate(raw_prediction(b));
-                double actual = evaluate(actual_runtime);
-                update_category_calibration(category_calibration, category, raw_pred, actual);
-                update_calibration_data(file_calibration, json_file.get(), raw_pred, actual,
+                float raw_pred = evaluate<float>(raw_prediction(b));
+                update_category_calibration(category_calibration, category, raw_pred, actual_time);
+                update_calibration_data(file_calibration, json_file, raw_pred, actual_time,
                                        category_calibration, category);
             }
             save_calibration_data("calibration_data.txt", file_calibration);
@@ -677,4 +671,4 @@ public:
     }
 };
 
-HALIDE_REGISTER_GENERATOR(CostModel, cost_model);
+HALIDE_REGISTER_GENERATOR(CostModel, cost_model)
