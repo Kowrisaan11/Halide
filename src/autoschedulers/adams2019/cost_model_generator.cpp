@@ -74,7 +74,7 @@ public:
     // Inputs
     GeneratorInput<Buffer<float>> input_buffer{"input_buffer", 3}; // Example buffer input
     GeneratorInput<int> batch_size{"batch_size", 1};
-    GeneratorParam<std::string> json_file{"json_file"};
+    GeneratorParam<std::string> json_file{"json_file", ""}; // Corrected initialization with default value
     GeneratorInput<float> actual_runtime{"actual_runtime", -1.0f};
 
     // Output
@@ -99,11 +99,15 @@ public:
     std::mutex file_mutex;
 
     // Constructor to initialize the PyTorch model and load scaler parameters
-    CostModel() {
+    CostModel() : device(torch::kCPU) {  // Initialize device to CPU
         // Initialize device
         bool is_gpu_available = torch::cuda::is_available();
-        device = torch::Device(is_gpu_available ? torch::kCUDA : torch::kCPU);
-        std::cout << (is_gpu_available ? "Using GPU" : "Using CPU") << std::endl;
+        if (is_gpu_available) {
+            device = torch::Device(torch::kCUDA);
+            std::cout << "Using GPU" << std::endl;
+        } else {
+            std::cout << "Using CPU" << std::endl;
+        }
 
         // Load the PyTorch model
         try {
@@ -551,7 +555,7 @@ public:
         category_calibration = load_category_calibration("category_calibration.txt");
 
         // Step 2: Load and parse the JSON file
-        std::ifstream ifs(json_file);
+        std::ifstream ifs(json_file); // Use json_file directly as std::string
         if (!ifs.is_open()) {
             std::cerr << "Error: Could not open JSON file " << json_file << std::endl;
             prediction_output(n) = 0.0f; // Default output
@@ -628,7 +632,7 @@ public:
         scalar_input_tensor = scalar_input_tensor.to(device);
 
         // Step 7: Run the PyTorch model
-        std::vector<torch::jit:: personally identifiable informationValue> inputs = {seq_input_tensor, scalar_input_tensor};
+        std::vector<torch::jit::IValue> inputs = {seq_input_tensor, scalar_input_tensor}; // Corrected type
         torch::Tensor output_tensor;
         try {
             auto start = std::chrono::high_resolution_clock::now();
@@ -642,7 +646,7 @@ public:
         } catch (const c10::Error& e) {
             if (device.is_cuda()) {
                 std::cout << "GPU inference failed: " << e.what() << ". Falling back to CPU" << std::endl;
-                device = torch::kCPU;
+                device = torch::Device(torch::kCPU);
                 pytorch_model->to(device);
                 seq_input_tensor = seq_input_tensor.to(device);
                 scalar_input_tensor = scalar_input_tensor.to(device);
