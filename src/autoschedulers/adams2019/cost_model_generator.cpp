@@ -117,7 +117,7 @@ public:
 
         // Load scaler parameters
         json scaler_params;
-        std::ifstream scaler_file("/home/kowrisaan/fyp/Halide/src/autoschedulers/adams2019/scaler_params.json");
+        std::ifstream scaler_file("scaler_params.json");
         if (!scaler_file.is_open()) {
             std::cerr << "Failed to open scaler_params.json" << std::endl;
             throw;
@@ -703,4 +703,70 @@ public:
     }
 };
 
+// Add the TrainCostModel class for training
+class TrainCostModel : public Generator<TrainCostModel> {
+protected:
+    bool allow_out_of_order_inputs_and_outputs() const override {
+        return true;
+    }
+
+public:
+    // Inputs for training
+    GeneratorInput<Buffer<float>> train_input_buffer{"train_input_buffer", 3};
+    GeneratorInput<Buffer<float>> train_labels{"train_labels", 1};
+    GeneratorInput<int> train_batch_size{"train_batch_size", 1};
+    GeneratorInput<float> learning_rate{"learning_rate", 0.001f};
+    
+    // Outputs for training
+    GeneratorOutput<Buffer<float>> loss_output{"loss_output", 1};
+    GeneratorOutput<Buffer<float>> model_weights{"model_weights", 1};
+
+    // PyTorch model and device
+    std::shared_ptr<torch::jit::Module> pytorch_model;
+    torch::Device device;
+
+    // Constructor
+    TrainCostModel() : device(torch::kCPU) {
+        // Force CPU usage regardless of CUDA availability
+        std::cout << "Using CPU for model training" << std::endl;
+
+        // Set environment variable to disable CUDA
+        setenv("CUDA_VISIBLE_DEVICES", "", 1);
+
+        // Load the PyTorch model
+        try {
+            pytorch_model = std::make_shared<torch::jit::Module>(torch::jit::load("/home/kowrisaan/fyp/Halide/src/autoschedulers/adams2019/model.pt", device));
+            // Set to training mode
+            pytorch_model->train();
+        } catch (const c10::Error& e) {
+            std::cerr << "Error loading the PyTorch model for training: " << e.what() << std::endl;
+            throw;
+        }
+    }
+
+    void generate() {
+        Var n("n");
+        
+        // Simple implementation for the training generator
+        // This is a placeholder - in a real implementation, you would:
+        // 1. Process the training data
+        // 2. Run training iterations
+        // 3. Update model weights
+        // 4. Output the loss and updated weights
+        
+        // For now, just provide dummy outputs to satisfy the generator interface
+        loss_output(n) = 0.0f;
+        model_weights(n) = 0.0f;
+        
+        // Set estimates
+        train_batch_size.set_estimate(32);
+        loss_output.set_estimates({{0, 1}});
+        model_weights.set_estimates({{0, 1000}}); // Arbitrary size for model weights
+        
+        std::cout << "TrainCostModel generator called - this is a placeholder implementation" << std::endl;
+    }
+};
+
+// Register both generators
 HALIDE_REGISTER_GENERATOR(CostModel, cost_model)
+HALIDE_REGISTER_GENERATOR(TrainCostModel, train_cost_model)
