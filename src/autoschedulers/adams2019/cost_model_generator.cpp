@@ -17,6 +17,7 @@ const std::vector<std::string> FIXED_FEATURES = {
     // ...many more features (shortened for clarity)
 };
 
+
 // Hardware correction factors struct
 struct HardwareCorrectionFactors {
     double base_correction;
@@ -63,6 +64,9 @@ public:
     std::shared_ptr<torch::jit::Module> pytorch_model;
     torch::Device device = torch::Device(torch::kCPU); // Initialize with valid value
 
+    // Define variables for dimensions
+    Var n{"n"}, f{"f"};
+
     CostModel() {
         // Check for GPU availability
         bool is_gpu_available = torch::cuda::is_available();
@@ -81,43 +85,30 @@ public:
     }
 
     void generate() {
-        Var n("n"), f("f");
+        // Access batch_size using its internal value
+        Expr batch_size_val = batch_size;
         
-        // Get batch size as a C++ value
-        int batch_size_val = batch_size;
+        // Create a simple implementation for demonstration
+        Func model_output("model_output");
+        // Simple placeholder computation (replace with actual model integration)
+        model_output(n) = sum(features_input(n, f)) / 100.0f;
         
-        // Create an external function for PyTorch inference
-        // This function will be implemented separately
-        Func torch_inference("torch_inference");
-        std::vector<ExternFuncArgument> args = {
-            features_input,
-            cast<int32_t>(features_input.dim(0).extent()),
-            cast<int32_t>(features_input.dim(1).extent())
-        };
-        
-        torch_inference.define_extern(
-            "halide_torch_inference",  // C function name
-            args,                     // Arguments
-            Float(32),                // Return type
-            1                         // Dimensionality
-        );
-        
-        // Apply simple post-processing
+        // Apply any post-processing
         Func processed_prediction("processed_prediction");
-        processed_prediction(n) = torch_inference(n);
+        processed_prediction(n) = model_output(n);
         
         // Set the final output
         prediction_output(n) = processed_prediction(n);
         
-        // Set estimates
-        batch_size.set_estimate(1);
-        features_input.set_estimate(0, 0, batch_size_val)
-                     .set_estimate(1, 0, FIXED_FEATURES.size());
-        prediction_output.set_estimates({{0, batch_size_val}});
+        // Set estimates for autoscheduling
+        // Note: using Vars for dimensions, not integers
+        features_input.set_estimates({{0, batch_size}, {0, cast<int>(FIXED_FEATURES.size())}});
+        actual_runtime.set_estimate(0.0f);
+        prediction_output.set_estimates({{0, batch_size}});
         
         // Simple schedule
         prediction_output.compute_root().parallel(n);
     }
 };
 
-HALIDE_REGISTER_GENERATOR(CostModel, cost_model);
+HALIDE_REGISTER_GENERATOR(CostModel, cost_model)
