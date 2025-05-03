@@ -69,8 +69,9 @@ protected:
     }
 
 public:
-    using Input = GeneratorInput;
-    using Output = GeneratorOutput;
+    // Fix: Specify template parameters for Input and Output
+    using Input = GeneratorInput<Buffer<float>, int, float, std::string>;
+    using Output = GeneratorOutput<Buffer<float>>;
 
     // Inputs
     Input<int> batch_size{"batch_size", 1};
@@ -81,8 +82,8 @@ public:
     Output<Buffer<float>> prediction_output{"prediction_output", 1};
 
     // PyTorch model and device
-    std::shared_ptr<torch::jit::script::Module> pytorch_model;
-    torch::Device device;
+    std::shared_ptr<torch::jit::Module> pytorch_model;
+    torch::Device device; // Will initialize in constructor
 
     // Scaler parameters
     std::vector<double> X_scalar_center;
@@ -97,14 +98,15 @@ public:
 
     // Constructor to initialize the PyTorch model and load scaler parameters
     CostModel() {
-        // Determine device
+        // Fix: Initialize device with explicit type
         bool is_gpu_available = torch::cuda::is_available();
-        device = is_gpu_available ? torch::Device(torch::kCUDA, 0) : torch::kCPU;
+        device = is_gpu_available ? torch::Device(torch::kCUDA, 0) : torch::Device(torch::kCPU);
         std::cout << (is_gpu_available ? "Using GPU" : "Using CPU") << std::endl;
 
         // Load the PyTorch model
         try {
-            pytorch_model = torch::jit::load("model.pt");
+            // Fix: Use std::make_shared for proper shared_ptr initialization
+            pytorch_model = std::make_shared<torch::jit::Module>(torch::jit::load("model.pt"));
             pytorch_model->to(device);
             pytorch_model->eval();
         } catch (const c10::Error& e) {
@@ -121,6 +123,7 @@ public:
         }
         scaler_file >> scaler_params;
         scaler_file.close();
+        
         X_scalar_center = scaler_params["X_scalar_center"].get<std::vector<double>>();
         X_scalar_scale = scaler_params["X_scalar_scale"].get<std::vector<double>>();
         y_center = scaler_params["y_center"][0].get<double>();
@@ -516,16 +519,18 @@ public:
         category_calibration = load_category_calibration("category_calibration.txt");
 
         // Step 2: Load and parse the JSON file
-        std::ifstream ifs(json_file);
+        // Fix: Extract string value from GeneratorInput
+        std::ifstream ifs(json_file.get());
         if (!ifs.is_open()) {
-            std::cerr << "Error: Could not open JSON file " << json_file << std::endl;
+            // Fix: Use .get() to extract the string value
+            std::cerr << "Error: Could not open JSON file " << json_file.get() << std::endl;
             throw;
         }
         json graph_data;
         try {
             ifs >> graph_data;
         } catch (const json::exception& e) {
-            std::cerr << "Error parsing JSON file " << json_file << ": " << e.what() << std::endl;
+            std::cerr << "Error parsing JSON file " << json_file.get() << ": " << e.what() << std::endl;
             throw;
         }
         ifs.close();
@@ -534,7 +539,7 @@ public:
         auto features = extract_features(graph_data);
 
         // Step 4: Determine category
-        std::string category = get_file_category(json_file, features);
+        std::string category = get_file_category(json_file.get(), features);
 
         // Step 5: Prepare inputs for the PyTorch model
         int batch_size_val = batch_size;
@@ -641,7 +646,7 @@ public:
             double raw_pred = evaluate(raw_prediction(b));
             double corrected = correct_prediction(raw_pred, actual_runtime, device.is_cuda(),
                                                   factors, file_calibration, category_calibration,
-                                                  json_file, category, features);
+                                                  json_file.get(), category, features);
             corrected_prediction(b) = static_cast<float>(corrected);
         }
 
@@ -651,7 +656,7 @@ public:
                 double raw_pred = evaluate(raw_prediction(b));
                 double actual = evaluate(actual_runtime);
                 update_category_calibration(category_calibration, category, raw_pred, actual);
-                update_calibration_data(file_calibration, json_file, raw_pred, actual,
+                update_calibration_data(file_calibration, json_file.get(), raw_pred, actual,
                                        category_calibration, category);
             }
             save_calibration_data("calibration_data.txt", file_calibration);
