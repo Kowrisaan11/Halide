@@ -5,13 +5,18 @@ COMMON_DIR ?= $(realpath $(SRC)/../common/)
 
 HALIDE_DISTRIB_PATH ?= $(HALIDE_SRC_ROOT)/distrib
 
-# LibTorch integration
+# LibTorch integration - Improved configuration
 LIBTORCH_PATH = /home/kowrisaan/fyp/libtorch
 CXXFLAGS += -I$(LIBTORCH_PATH)/include
 CXXFLAGS += -I$(LIBTORCH_PATH)/include/torch/csrc/api/include
 CXXFLAGS += -std=c++14  # LibTorch requires C++14 or higher
-LDFLAGS += -L$(LIBTORCH_PATH)/lib
-LIBS += -ltorch -lc10 -ltorch_cpu
+LDFLAGS += -L$(LIBTORCH_PATH)/lib -Wl,-rpath,$(LIBTORCH_PATH)/lib
+# Expand the list of PyTorch libraries
+LIBTORCH_LIBS = -ltorch -lc10 -ltorch_cpu
+# Add CUDA support if available
+ifneq (,$(wildcard $(LIBTORCH_PATH)/lib/libtorch_cuda.so))
+    LIBTORCH_LIBS += -ltorch_cuda -lc10_cuda
+endif
 
 $(info Looking for Halide distro at $(HALIDE_DISTRIB_PATH). If this is incorrect, set the make variable HALIDE_DISTRIB_PATH)
 
@@ -47,12 +52,13 @@ AUTOSCHED_COST_MODEL_LIBS=\
 $(BIN)/cost_model/adams2019_cost_model.a \
 $(BIN)/cost_model/adams2019_train_cost_model.a \
 
+# Modified to include PyTorch libraries
 $(BIN)/cost_model.generator: $(SRC)/cost_model_generator.cpp \
 				$(SRC)/cost_model_schedule.h \
 				$(SRC)/NetworkSize.h \
 				$(GENERATOR_DEPS)
 	@mkdir -p $(@D)
-	$(CXX) $(CXXFLAGS) $(filter %.cpp,$^) -o $@ $(USE_EXPORT_DYNAMIC) $(LIBHALIDE_LDFLAGS)
+	$(CXX) $(CXXFLAGS) $(filter %.cpp,$^) -o $@ $(USE_EXPORT_DYNAMIC) $(LIBHALIDE_LDFLAGS) $(LDFLAGS) $(LIBTORCH_LIBS)
 
 $(BIN)/auto_schedule_runtime.a: $(BIN)/cost_model.generator
 	@mkdir -p $(@D)
@@ -93,8 +99,9 @@ $(BIN)/libautoschedule_adams2019.$(PLUGIN_EXT): \
 				$(BIN)/auto_schedule_runtime.a \
 				| $(LIB_HALIDE)
 	@mkdir -p $(@D)
-	$(CXX) -shared $(USE_EXPORT_DYNAMIC) -fPIC -fvisibility=hidden -fvisibility-inlines-hidden $(CXXFLAGS) $(OPTIMIZE) -I $(BIN)/cost_model $(filter-out %.h $(LIBHALIDE_LDFLAGS),$^) -o $@ $(HALIDE_SYSTEM_LIBS) $(LDFLAGS) $(LIBS) $(HALIDE_RPATH_FOR_LIB) -I $(SRC)
+	$(CXX) -shared $(USE_EXPORT_DYNAMIC) -fPIC -fvisibility=hidden -fvisibility-inlines-hidden $(CXXFLAGS) $(OPTIMIZE) -I $(BIN)/cost_model $(filter-out %.h $(LIBHALIDE_LDFLAGS),$^) -o $@ $(HALIDE_SYSTEM_LIBS) $(LDFLAGS) $(LIBS) $(LIBTORCH_LIBS) $(HALIDE_RPATH_FOR_LIB) -I $(SRC)
 
+# Modified to include PyTorch libraries
 $(BIN)/adams2019_retrain_cost_model: $(SRC)/retrain_cost_model.cpp \
 				$(COMMON_DIR)/ASLog.cpp \
 				$(SRC)/DefaultCostModel.h \
@@ -107,7 +114,7 @@ $(BIN)/adams2019_retrain_cost_model: $(SRC)/retrain_cost_model.cpp \
 				$(AUTOSCHED_WEIGHT_OBJECTS) \
 				$(BIN)/auto_schedule_runtime.a
 	@mkdir -p $(@D)
-	$(CXX) $(CXXFLAGS) -frtti -Wall -I ../support -I $(BIN)/cost_model $(OPTIMIZE) $(filter-out %.h,$^) -o $@ $(LIBHALIDE_LDFLAGS) $(LDFLAGS) $(LIBS) $(USE_OPEN_MP) $(HALIDE_RPATH_FOR_BIN) -I $(SRC)
+	$(CXX) $(CXXFLAGS) -frtti -Wall -I ../support -I $(BIN)/cost_model $(OPTIMIZE) $(filter-out %.h,$^) -o $@ $(LIBHALIDE_LDFLAGS) $(LDFLAGS) $(LIBS) $(LIBTORCH_LIBS) $(USE_OPEN_MP) $(HALIDE_RPATH_FOR_BIN) -I $(SRC)
 
 $(BIN)/adams2019_weightsdir_to_weightsfile: $(SRC)/weightsdir_to_weightsfile.cpp $(SRC)/Weights.cpp
 	@mkdir -p $(@D)
