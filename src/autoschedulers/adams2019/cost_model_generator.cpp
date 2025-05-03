@@ -14,9 +14,8 @@ using namespace Halide;
 // Define FIXED_FEATURES as in the Python code
 const std::vector<std::string> FIXED_FEATURES = {
     "cache_hits", "cache_misses", "execution_time_ms", "sched_num_realizations",
-    // ...many more features (shortened for clarity)
+    // ...other features...
 };
-
 
 // Hardware correction factors struct
 struct HardwareCorrectionFactors {
@@ -85,8 +84,8 @@ public:
     }
 
     void generate() {
-        // Access batch_size using its internal value
-        Expr batch_size_val = batch_size;
+        // Convert FIXED_FEATURES.size() to a C++ int first
+        int num_features = static_cast<int>(FIXED_FEATURES.size());
         
         // Create a simple implementation for demonstration
         Func model_output("model_output");
@@ -100,11 +99,12 @@ public:
         // Set the final output
         prediction_output(n) = processed_prediction(n);
         
-        // Set estimates for autoscheduling
-        // Note: using Vars for dimensions, not integers
-        features_input.set_estimates({{0, batch_size}, {0, cast<int>(FIXED_FEATURES.size())}});
+        // Set estimates for autoscheduling - use the dimension-by-dimension form
+        features_input.set_estimate(0, 0, batch_size);
+        features_input.set_estimate(1, 0, num_features);
+        
         actual_runtime.set_estimate(0.0f);
-        prediction_output.set_estimates({{0, batch_size}});
+        prediction_output.set_estimate(0, 0, batch_size);
         
         // Simple schedule
         prediction_output.compute_root().parallel(n);
