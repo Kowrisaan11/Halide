@@ -74,7 +74,7 @@ public:
     // Inputs
     GeneratorInput<Buffer<float>> input_buffer{"input_buffer", 3}; // Example buffer input
     GeneratorInput<int> batch_size{"batch_size", 1};
-    GeneratorInput<std::string> json_file{"json_file"};
+    GeneratorParam<std::string> json_file{"json_file"};
     GeneratorInput<float> actual_runtime{"actual_runtime", -1.0f};
 
     // Output
@@ -628,7 +628,7 @@ public:
         scalar_input_tensor = scalar_input_tensor.to(device);
 
         // Step 7: Run the PyTorch model
-        std::vector<torch::jit::IValue> inputs = {seq_input_tensor, scalar_input_tensor};
+        std::vector<torch::jit:: personally identifiable informationValue> inputs = {seq_input_tensor, scalar_input_tensor};
         torch::Tensor output_tensor;
         try {
             auto start = std::chrono::high_resolution_clock::now();
