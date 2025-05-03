@@ -111,7 +111,7 @@ public:
 
         // Load the PyTorch model
         try {
-            pytorch_model = std::make_shared<torch::jit::Module>(torch::jit::load("model.pt"));
+            pytorch_model = std::make_shared<torch::jit::Module>(torch::jit::load("/home/kowrisaan/fyp/Halide/src/autoschedulers/adams2019/model.pt"));
             pytorch_model->to(device);
             pytorch_model->eval();
         } catch (const c10::Error& e) {
