@@ -100,19 +100,15 @@ public:
 
     // Constructor to initialize the PyTorch model and load scaler parameters
     CostModel() : device(torch::kCPU) {
-        // Initialize device
-        bool is_gpu_available = torch::cuda::is_available();
-        if (is_gpu_available) {
-            device = torch::Device(torch::kCUDA);
-            std::cout << "Using GPU" << std::endl;
-        } else {
-            std::cout << "Using CPU" << std::endl;
-        }
+        // Force CPU usage regardless of CUDA availability
+        std::cout << "Using CPU for model inference" << std::endl;
+
+        // Set environment variable to disable CUDA
+        setenv("CUDA_VISIBLE_DEVICES", "", 1);
 
         // Load the PyTorch model
         try {
-            pytorch_model = std::make_shared<torch::jit::Module>(torch::jit::load("/home/kowrisaan/fyp/Halide/src/autoschedulers/adams2019/model.pt"));
-            pytorch_model->to(device);
+            pytorch_model = std::make_shared<torch::jit::Module>(torch::jit::load("/home/kowrisaan/fyp/Halide/src/autoschedulers/adams2019/model.pt", device));
             pytorch_model->eval();
         } catch (const c10::Error& e) {
             std::cerr << "Error loading the PyTorch model: " << e.what() << std::endl;
@@ -635,10 +631,6 @@ public:
                                                             {batch_size_val, scalar_input_size},
                                                             torch::kFloat32);
 
-        // Move tensors to device
-        seq_input_tensor = seq_input_tensor.to(device);
-        scalar_input_tensor = scalar_input_tensor.to(device);
-
         // Step 8: Run the PyTorch model
         std::vector<torch::jit::IValue> inputs = {seq_input_tensor, scalar_input_tensor};
         torch::Tensor output_tensor;
@@ -652,26 +644,9 @@ public:
                 std::cout << "Model inference took " << duration << "ms" << std::endl;
             }
         } catch (const c10::Error& e) {
-            if (device.is_cuda()) {
-                std::cout << "GPU inference failed: " << e.what() << ". Falling back to CPU" << std::endl;
-                device = torch::Device(torch::kCPU);
-                pytorch_model->to(device);
-                seq_input_tensor = seq_input_tensor.to(device);
-                scalar_input_tensor = scalar_input_tensor.to(device);
-                inputs = {seq_input_tensor, scalar_input_tensor};
-                try {
-                    torch::NoGradGuard no_grad;
-                    output_tensor = pytorch_model->forward(inputs).toTensor();
-                } catch (const c10::Error& e) {
-                    std::cerr << "Error during CPU fallback inference: " << e.what() << std::endl;
-                    prediction_output(n) = 0.0f; // Default output
-                    return;
-                }
-            } else {
-                std::cerr << "Error during model inference: " << e.what() << std::endl;
-                prediction_output(n) = 0.0f; // Default output
-                return;
-            }
+            std::cerr << "Error during model inference: " << e.what() << std::endl;
+            prediction_output(n) = 0.0f; // Default output
+            return;
         }
 
         // Step 9: Convert PyTorch output to Halide
@@ -692,11 +667,11 @@ public:
         // Step 11: Apply correction
         Func corrected_prediction("corrected_prediction");
         corrected_prediction(n) = 0.0f;
-        const HardwareCorrectionFactors& factors = device.is_cuda() ? GPU_CORRECTION_FACTORS : CPU_CORRECTION_FACTORS;
+        const HardwareCorrectionFactors& factors = CPU_CORRECTION_FACTORS; // Always use CPU factors
         float actual_time = evaluate<float>(actual_runtime);
         for (int b = 0; b < batch_size_val; b++) {
             float raw_pred = evaluate<float>(raw_prediction(b));
-            double corrected = correct_prediction(raw_pred, actual_time, device.is_cuda(),
+            double corrected = correct_prediction(raw_pred, actual_time, false, // Never use GPU
                                                  factors, file_calibration, category_calibration,
                                                  json_file_path, category, features);
             corrected_prediction(b) = static_cast<float>(corrected);
