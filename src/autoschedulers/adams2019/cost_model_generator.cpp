@@ -72,9 +72,10 @@ protected:
 
 public:
     // Inputs
-    GeneratorInput<Buffer<float>> input_buffer{"input_buffer", 3}; // Example buffer input
+    GeneratorInput<Buffer<float>> input_buffer{"input_buffer", 3};
     GeneratorInput<int> batch_size{"batch_size", 1};
-    GeneratorParam<std::string> json_file{"json_file", ""}; // Corrected initialization with default value
+    // Replace std::string GeneratorParam with a file path input
+    GeneratorInput<Buffer<uint8_t>> json_file_buffer{"json_file_buffer", 1};
     GeneratorInput<float> actual_runtime{"actual_runtime", -1.0f};
 
     // Output
@@ -99,7 +100,7 @@ public:
     std::mutex file_mutex;
 
     // Constructor to initialize the PyTorch model and load scaler parameters
-    CostModel() : device(torch::kCPU) {  // Initialize device to CPU
+    CostModel() : device(torch::kCPU) {
         // Initialize device
         bool is_gpu_available = torch::cuda::is_available();
         if (is_gpu_available) {
@@ -554,10 +555,18 @@ public:
         file_calibration = load_calibration_data("calibration_data.txt");
         category_calibration = load_category_calibration("category_calibration.txt");
 
-        // Step 2: Load and parse the JSON file
-        std::ifstream ifs(json_file); // Use json_file directly as std::string
+        // Step 2: Get the JSON file path from environment
+        const char* json_file_path = getenv("HALIDE_JSON_FILE_PATH");
+        if (!json_file_path) {
+            std::cerr << "Error: HALIDE_JSON_FILE_PATH environment variable not set" << std::endl;
+            prediction_output(n) = 0.0f; // Default output
+            return;
+        }
+
+        // Step 3: Load and parse the JSON file
+        std::ifstream ifs(json_file_path);
         if (!ifs.is_open()) {
-            std::cerr << "Error: Could not open JSON file " << json_file << std::endl;
+            std::cerr << "Error: Could not open JSON file " << json_file_path << std::endl;
             prediction_output(n) = 0.0f; // Default output
             return;
         }
@@ -565,19 +574,19 @@ public:
         try {
             ifs >> graph_data;
         } catch (const json::exception& e) {
-            std::cerr << "Error parsing JSON file " << json_file << ": " << e.what() << std::endl;
+            std::cerr << "Error parsing JSON file " << json_file_path << ": " << e.what() << std::endl;
             prediction_output(n) = 0.0f; // Default output
             return;
         }
         ifs.close();
 
-        // Step 3: Extract features
+        // Step 4: Extract features
         auto features = extract_features(graph_data);
 
-        // Step 4: Determine category
-        std::string category = get_file_category(json_file, features);
+        // Step 5: Determine category
+        std::string category = get_file_category(json_file_path, features);
 
-        // Step 5: Prepare inputs for the PyTorch model
+        // Step 6: Prepare inputs for the PyTorch model
         int batch_size_val = evaluate<int>(batch_size);
         if (batch_size_val <= 0) {
             std::cerr << "Invalid batch_size: " << batch_size_val << std::endl;
@@ -619,7 +628,7 @@ public:
             }
         }
 
-        // Step 6: Create PyTorch tensors
+        // Step 7: Create PyTorch tensors
         torch::Tensor seq_input_tensor = torch::from_blob(seq_input_data.data(),
                                                          {batch_size_val, sequence_length, seq_input_size},
                                                          torch::kFloat32);
@@ -631,8 +640,8 @@ public:
         seq_input_tensor = seq_input_tensor.to(device);
         scalar_input_tensor = scalar_input_tensor.to(device);
 
-        // Step 7: Run the PyTorch model
-        std::vector<torch::jit::IValue> inputs = {seq_input_tensor, scalar_input_tensor}; // Corrected type
+        // Step 8: Run the PyTorch model
+        std::vector<torch::jit::IValue> inputs = {seq_input_tensor, scalar_input_tensor};
         torch::Tensor output_tensor;
         try {
             auto start = std::chrono::high_resolution_clock::now();
@@ -666,7 +675,7 @@ public:
             }
         }
 
-        // Step 8: Convert PyTorch output to Halide
+        // Step 9: Convert PyTorch output to Halide
         auto output_accessor = output_tensor.accessor<float, 2>();
         Func predicted_scaled_runtime("predicted_scaled_runtime");
         predicted_scaled_runtime(n) = 0.0f;
@@ -674,14 +683,14 @@ public:
             predicted_scaled_runtime(b) = output_accessor[b][0];
         }
 
-        // Step 9: Inverse transform the output with clamping
+        // Step 10: Inverse transform the output with clamping
         Func predicted_transformed("predicted_transformed");
         predicted_transformed(n) = predicted_scaled_runtime(n) * static_cast<float>(y_scale) + static_cast<float>(y_center);
         Func raw_prediction("raw_prediction");
         Expr clamped_input = clamp(predicted_transformed(n), -50.0f, 50.0f); // Prevent exp overflow
         raw_prediction(n) = exp(clamped_input) - 1.0f;
 
-        // Step 10: Apply correction
+        // Step 11: Apply correction
         Func corrected_prediction("corrected_prediction");
         corrected_prediction(n) = 0.0f;
         const HardwareCorrectionFactors& factors = device.is_cuda() ? GPU_CORRECTION_FACTORS : CPU_CORRECTION_FACTORS;
@@ -690,30 +699,30 @@ public:
             float raw_pred = evaluate<float>(raw_prediction(b));
             double corrected = correct_prediction(raw_pred, actual_time, device.is_cuda(),
                                                  factors, file_calibration, category_calibration,
-                                                 json_file, category, features);
+                                                 json_file_path, category, features);
             corrected_prediction(b) = static_cast<float>(corrected);
         }
 
-        // Step 11: Update calibration if actual runtime is provided
+        // Step 12: Update calibration if actual runtime is provided
         if (actual_time > 0) {
             for (int b = 0; b < batch_size_val; b++) {
                 float raw_pred = evaluate<float>(raw_prediction(b));
                 update_category_calibration(category_calibration, category, raw_pred, actual_time);
-                update_calibration_data(file_calibration, json_file, raw_pred, actual_time,
+                update_calibration_data(file_calibration, json_file_path, raw_pred, actual_time,
                                        category_calibration, category);
             }
             save_calibration_data("calibration_data.txt", file_calibration);
             save_category_calibration("category_calibration.txt", category_calibration);
         }
 
-        // Step 12: Set the final output
+        // Step 13: Set the final output
         prediction_output(n) = corrected_prediction(n);
 
-        // Step 13: Set estimates for autoscheduling
+        // Step 14: Set estimates for autoscheduling
         batch_size.set_estimate(1);
         prediction_output.set_estimates({{0, batch_size_val}});
 
-        // Step 14: Simplified scheduling for inference
+        // Step 15: Simplified scheduling for inference
         Var no;
         prediction_output.compute_root().split(n, no, n, 8).parallel(no);
         prediction_output.bound(n, 0, batch_size);
