@@ -51,8 +51,8 @@ struct ModelWeight<true> : public GeneratorInput<Buffer<float>> {
     void backprop(const Derivative &d, const Expr &learning_rate, const Expr &timestep) {
         // Implementation from original code
         std::vector<Expr> args(dimensions() + 1);
-        for (auto &e : args) {
-            e = Var();
+        for (size_t i = 0; i < args.size(); i++) {
+            args[i] = Var();
         }
         grad(args) = undef<float>();
 
@@ -165,8 +165,8 @@ public:
     // The predicted runtimes
     Output<Buffer<float>> prediction_output{"prediction_output", 1};
 
-    // The loss
-    Output<Buffer<float>> loss_output{"loss_output", 0};
+    // The loss - changed to a scalar output
+    Output<float> loss_output{"loss_output"};
 
     // PyTorch model and device
     std::shared_ptr<torch::jit::Module> pytorch_model;
@@ -253,9 +253,9 @@ public:
         prediction_output(n) = prediction(n);
 
         if (!training) {
-            loss_output() = 0.0f;
+            loss_output = 0.0f;
         } else {
-            // Training mode logic - CORRECTED to properly use RDom
+            // Training mode logic - CORRECTED to properly use RDom and avoid Tuple issues
             RDom r_batch(0, batch_size);
             
             // Compute squared error loss
@@ -263,8 +263,13 @@ public:
             squared_error(n) = pow(prediction_output(n) - true_runtime(n), 2);
             
             // Sum over the batch using the reduction domain
-            Expr loss = sum(squared_error(r_batch));
-            loss_output() = loss;
+            // Use a separate Func to compute the loss to avoid Tuple construction issues
+            Func loss_func;
+            loss_func() = 0.0f;
+            loss_func() += squared_error(r_batch);
+            
+            // Assign the scalar loss value
+            loss_output = loss_func();
 
             // Backpropagate
             Derivative d_loss_d = propagate_adjoints(loss_output);
