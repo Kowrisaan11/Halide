@@ -1,6 +1,4 @@
 // GNNCostModel.cpp
-// A Halide generator that uses a scripted PyTorch‐Geometric GNN to predict
-// pipeline runtimes from graph features (node_features + edge_index).
 
 #include <torch/script.h>
 #include <Halide.h>
