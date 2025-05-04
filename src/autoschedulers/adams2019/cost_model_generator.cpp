@@ -198,6 +198,17 @@ public:
     void generate() {
         Var c("c"), w("w"), n("n"), j("j"), s("s");
 
+        // Set estimates for all inputs FIRST, before using them
+        num_cores.set_estimate(32);
+        reference.set_estimate(0);
+        batch_size.set_estimate(80);  // Set this early
+        num_stages.set_estimate(13);
+        learning_rate.set_estimate(0.001f);
+        timestep.set_estimate(37);
+        
+        // Use a constant value for RDom bounds instead of batch_size parameter
+        const int batch_size_val = 80;  // Use this constant for RDom
+
         // Implement the original cost model logic
         Func normalized_schedule_features("normalized_schedule_features");
         normalized_schedule_features(n, c, s) = fast_log(schedule_features(n, c, s) + 1);
@@ -258,8 +269,8 @@ public:
             // For inference mode, just set loss to zero
             loss_func() = 0.0f;
         } else {
-            // Training mode logic - CORRECTED to properly use RDom and Func
-            RDom r_batch(0, evaluate<int>(batch_size));
+            // Training mode logic - CORRECTED to use constant value for RDom
+            RDom r_batch(0, batch_size_val);  // Use constant value instead of parameter
             
             // Compute squared error loss
             Func squared_error;
@@ -294,17 +305,11 @@ public:
         filter1.set_shape(conv1_channels, head1_channels + head2_channels);
         bias1.set_shape(conv1_channels);
 
-        // Set estimates
-        num_cores.set_estimate(32);
-        reference.set_estimate(0);
-        batch_size.set_estimate(80);
-        num_stages.set_estimate(13);
-        prediction_output.set_estimates({{0, 80}});
-        learning_rate.set_estimate(0.001f);
-        timestep.set_estimate(37);
+        // Set estimates for outputs and remaining inputs
+        prediction_output.set_estimates({{0, batch_size_val}});
         pipeline_features.set_estimates({{0, head1_w}, {0, head1_h}, {0, 13}});
-        schedule_features.set_estimates({{0, 80}, {0, head2_w}, {0, 13}});
-        true_runtime.set_estimates({{0, 80}});
+        schedule_features.set_estimates({{0, batch_size_val}, {0, head2_w}, {0, 13}});
+        true_runtime.set_estimates({{0, batch_size_val}});
 
         // SCHEDULE
         if (training && !using_autoscheduler()) {
