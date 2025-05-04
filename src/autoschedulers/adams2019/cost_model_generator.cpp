@@ -224,7 +224,7 @@ public:
         
         // Set estimates for buffer inputs using dimension-specific methods
         // Pipeline features: 3D buffer
-        pipeline_features.dim(0).set_bounds(0, head1_w);
+        pipeline_features.set_estimates({{0, head1_w}, {0, head1_h}, {0, 13}});
         pipeline_features.dim(0).set_estimate(0, head1_w);
         pipeline_features.dim(1).set_bounds(0, head1_h);
         pipeline_features.dim(1).set_estimate(0, head1_h);
