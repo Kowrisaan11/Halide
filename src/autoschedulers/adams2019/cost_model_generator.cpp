@@ -12,86 +12,161 @@
 
 #include "Halide.h"
 #include "NetworkSize.h"
+#include "cost_model_schedule.h"
 
 using namespace Halide;
 using json = nlohmann::json;
 
-// Define FIXED_FEATURES as in the Python code
-const std::vector<std::string> FIXED_FEATURES = {
-    "cache_hits", "cache_misses", "execution_time_ms", "sched_num_realizations",
-    "sched_num_productions", "sched_points_computed_total", "sched_innermost_loop_extent",
-    "sched_inner_parallelism", "sched_outer_parallelism", "sched_bytes_at_realization",
-    "sched_bytes_at_production", "sched_bytes_at_root", "sched_unique_bytes_read_per_realization",
-    "sched_working_set", "sched_vector_size", "sched_num_vectors", "sched_num_scalars",
-    "sched_bytes_at_task", "sched_working_set_at_task", "sched_working_set_at_production",
-    "sched_working_set_at_realization", "sched_working_set_at_root", "total_parallelism",
-    "scheduling_count", "total_bytes_at_production", "total_vectors", "computation_efficiency",
-    "memory_pressure", "memory_utilization_ratio", "bytes_processing_rate", "bytes_per_parallelism",
-    "bytes_per_vector", "nodes_count", "edges_count", "node_edge_ratio", "nodes_per_schedule",
-    "op_diversity",
-    "op_add", "op_sub", "op_mul", "op_div", "op_mod", "op_eq", "op_ne", "op_lt", "op_le",
-    "op_or", "op_and", "op_not", "op_min", "op_max", "op_constant", "op_variable",
-    "op_funccall", "op_imagecall", "op_externcall", "op_let", "op_param",
-    "memory_transpose_0", "memory_transpose_1", "memory_transpose_2", "memory_transpose_3",
-    "memory_slice_0", "memory_slice_1", "memory_slice_2", "memory_slice_3",
-    "memory_broadcast_0", "memory_broadcast_1", "memory_broadcast_2", "memory_broadcast_3",
-    "memory_pointwise_0", "memory_pointwise_1", "memory_pointwise_2", "memory_pointwise_3"
+// Template-based model weight handling, just like in the original code
+template<bool training>
+struct ModelWeight;
+
+template<>
+struct ModelWeight<false> : public GeneratorInput<Buffer<float>> {
+    ModelWeight(const std::string &name, int dim)
+        : GeneratorInput<Buffer<float>>(name, dim) {
+    }
+    void backprop(const Derivative &d, const Expr &learning_rate, const Expr &timestep) {
+    }
+    void set_shape(int s0 = 0, int s1 = 0, int s2 = 0) {
+        if (s0) {
+            dim(0).set_bounds(0, s0);
+        }
+        if (s1) {
+            dim(1).set_bounds(0, s1);
+        }
+        if (s2) {
+            dim(2).set_bounds(0, s2);
+        }
+    }
 };
 
-// Enhanced hardware-specific correction factors
-struct HardwareCorrectionFactors {
-    double base_correction;
-    double gpu_correction;
-    double scaling_factor;
-    double min_time_ms;
-    double high_threshold_ms;
-    double high_scaling;
+template<>
+struct ModelWeight<true> : public GeneratorInput<Buffer<float>> {
+    GeneratorOutput<Buffer<float>> grad;
+
+    ModelWeight(const std::string &name, int dim)
+        : GeneratorInput<Buffer<float>>(name, dim), grad("updated_" + name, dim + 1) {
+    }
+    void backprop(const Derivative &d, const Expr &learning_rate, const Expr &timestep) {
+        // Implementation from original code
+        std::vector<Expr> args(dimensions() + 1);
+        for (auto &e : args) {
+            e = Var();
+        }
+        grad(args) = undef<float>();
+
+        args.back() = 0;
+        FuncRef new_weight = grad(args);
+        args.back() = 1;
+        FuncRef smoothed_deriv = grad(args);
+        args.back() = 2;
+        FuncRef smoothed_second_moment = grad(args);
+        args.back() = 3;
+        FuncRef loss_gradient = grad(args);
+
+        args.pop_back();
+        Expr current_weight = (*this)(args);
+
+        loss_gradient = d(*this)(args);
+
+        smoothed_deriv = 0.9f * smoothed_deriv + 0.1f * loss_gradient;
+        smoothed_second_moment = 0.999f * smoothed_second_moment + 0.001f * pow(loss_gradient, 2);
+
+        Expr smoothed_deriv_correction = 1 / (1 - pow(0.9f, timestep + 1));
+        Expr smoothed_second_moment_correction = 1 / (1 - pow(0.999f, timestep + 1));
+
+        Expr step = learning_rate * smoothed_deriv * smoothed_deriv_correction;
+        step /= sqrt(smoothed_second_moment * smoothed_second_moment_correction) + 1e-5f;
+
+        new_weight = current_weight - step;
+    }
+
+    void set_shape(int s0 = 0, int s1 = 0, int s2 = 0) {
+        // Implementation from original code
+        if (s0) {
+            dim(0).set_bounds(0, s0);
+            dim(0).set_estimate(0, s0);
+            grad.dim(0).set_bounds(0, s0);
+            grad.dim(0).set_estimate(0, s0);
+            grad.bound(grad.args()[0], 0, s0);
+            grad.set_estimate(grad.args()[0], 0, s0);
+        }
+        if (s1) {
+            dim(1).set_bounds(0, s1);
+            dim(1).set_estimate(0, s1);
+            grad.dim(1).set_bounds(0, s1);
+            grad.dim(1).set_estimate(0, s1);
+            grad.bound(grad.args()[1], 0, s1);
+            grad.set_estimate(grad.args()[1], 0, s1);
+        }
+        if (s2) {
+            dim(2).set_bounds(0, s2);
+            dim(2).set_estimate(0, s2);
+            grad.dim(2).set_bounds(0, s2);
+            grad.dim(2).set_estimate(0, s2);
+            grad.bound(grad.args()[2], 0, s2);
+            grad.set_estimate(grad.args()[2], 0, s2);
+        }
+        grad.dim(dimensions()).set_bounds(0, 4);
+        grad.dim(dimensions()).set_estimate(0, 4);
+    }
 };
 
-const HardwareCorrectionFactors GPU_CORRECTION_FACTORS = {
-    0.28, 0.9, 0.95, 100.0, 500.0, 0.92
-};
-
-const HardwareCorrectionFactors CPU_CORRECTION_FACTORS = {
-    0.35, 1.0, 0.97, 50.0, 300.0, 0.94
-};
-
-// Category-specific correction factors
-struct CategoryCorrection {
-    double scale_factor;
-    double bias;
-    double confidence;
-    int sample_count;
-};
-
-// Cost model generator that matches the function signature expected by DefaultCostModel.cpp
-class CostModel : public Generator<CostModel> {
+template<bool training>
+class CostModel : public Generator<CostModel<training>> {
 protected:
     bool allow_out_of_order_inputs_and_outputs() const override {
         return true;
     }
 
 public:
-    // Inputs - match the signature in DefaultCostModel.cpp:evaluate_costs()
-    GeneratorInput<int> num_stages{"num_stages", 1};
-    GeneratorInput<int> batch_size{"batch_size", 1};
-    GeneratorInput<int> num_cores{"num_cores", 1};
-    GeneratorInput<Buffer<float>> pipeline_feat_queue{"pipeline_feat_queue", 3};
-    GeneratorInput<Buffer<float>> schedule_feat_queue{"schedule_feat_queue", 3};
-    GeneratorInput<Buffer<float>> head1_filter{"head1_filter", 2};
-    GeneratorInput<Buffer<float>> head1_bias{"head1_bias", 1};
-    GeneratorInput<Buffer<float>> head2_filter{"head2_filter", 2};
-    GeneratorInput<Buffer<float>> head2_bias{"head2_bias", 1};
-    GeneratorInput<Buffer<float>> conv1_filter{"conv1_filter", 4};
-    GeneratorInput<Buffer<float>> conv1_bias{"conv1_bias", 1};
-    GeneratorInput<float> learning_rate{"learning_rate", 0.0f};
-    GeneratorInput<int> timestep{"timestep", 0};
-    GeneratorInput<int> fastest_idx{"fastest_idx", 0};
-    GeneratorInput<Buffer<float>> true_runtimes{"true_runtimes", 1};
+    template<typename T>
+    using Input = GeneratorInput<T>;
+    template<typename T>
+    using Output = GeneratorOutput<T>;
+    using Generator<CostModel<training>>::using_autoscheduler;
+    using Generator<CostModel<training>>::get_pipeline;
 
-    // Outputs
-    GeneratorOutput<Buffer<float>> costs{"costs", 1};
-    GeneratorOutput<Buffer<float>> loss{"loss", 0};
+    // Number of pipeline stages
+    Input<int> num_stages{"num_stages", 1};
+
+    // Batch size
+    Input<int> batch_size{"batch_size", 1};
+
+    // Number of cores on the target machine
+    Input<int> num_cores{"num_cores", 1};
+
+    // Algorithm-specific features
+    Input<Buffer<float>> pipeline_features{"pipeline_features", 3};
+
+    // Schedule-specific features
+    Input<Buffer<float>> schedule_features{"schedule_features", 3};
+
+    // Network weights
+    using Weight = ModelWeight<training>;
+    Weight head1_filter{"head1_filter", 3};
+    Weight head1_bias{"head1_bias", 1};
+    Weight head2_filter{"head2_filter", 2};
+    Weight head2_bias{"head2_bias", 1};
+    Weight filter1{"filter1", 2};
+    Weight bias1{"bias1", 1};
+
+    // Some extra inputs for training mode
+    Input<float> learning_rate{"learning_rate", 1.0f};
+    Input<int> timestep{"timestep", 0};
+
+    // The index of the fastest schedule in the batch
+    Input<int> reference{"reference", 0};
+
+    // The true runtimes obtained by benchmarking
+    Input<Buffer<float>> true_runtime{"true_runtime", 1};
+
+    // The predicted runtimes
+    Output<Buffer<float>> prediction_output{"prediction_output", 1};
+
+    // The loss
+    Output<Buffer<float>> loss_output{"loss_output", 0};
 
     // PyTorch model and device
     std::shared_ptr<torch::jit::Module> pytorch_model;
@@ -100,7 +175,7 @@ public:
     // Constructor
     CostModel() : device(torch::kCPU) {
         // Force CPU usage regardless of CUDA availability
-        std::cout << "Using CPU for model inference" << std::endl;
+        std::cout << "Using CPU for model " << (training ? "training" : "inference") << std::endl;
 
         // Set environment variable to disable CUDA
         setenv("CUDA_VISIBLE_DEVICES", "", 1);
@@ -108,7 +183,11 @@ public:
         // Load the PyTorch model
         try {
             pytorch_model = std::make_shared<torch::jit::Module>(torch::jit::load("/home/kowrisaan/fyp/Halide/src/autoschedulers/adams2019/model.pt", device));
-            pytorch_model->eval();
+            if (training) {
+                pytorch_model->train();
+            } else {
+                pytorch_model->eval();
+            }
         } catch (const c10::Error& e) {
             std::cerr << "Error loading the PyTorch model: " << e.what() << std::endl;
             // Don't throw, just continue with a warning
@@ -117,114 +196,123 @@ public:
     }
 
     void generate() {
-        Var n("n");
-        
-        // Implement the cost model logic here
-        // This should match what DefaultCostModel.cpp expects in evaluate_costs()
-        
-        // For now, just provide a simple implementation
-        costs(n) = 1.0f;  // Default cost
-        loss() = 0.0f;    // Default loss
-        
+        Var c("c"), w("w"), n("n"), j("j"), s("s");
+
+        // Implement the original cost model logic
+        Func normalized_schedule_features("normalized_schedule_features");
+        normalized_schedule_features(n, c, s) = fast_log(schedule_features(n, c, s) + 1);
+
+        // Force the weights of the algorithm embedding layer to be positive and bounded
+        Func squashed_head1_filter("squashed_head1_filter");
+        squashed_head1_filter(c, s, n) = sigmoid(head1_filter(c, s, n));
+
+        // Explicitly broadcast the weights across the batch
+        Func squashed_head1_filter_broadcast("squashed_head1_filter_broadcast");
+        squashed_head1_filter_broadcast(c, w, s, n) = squashed_head1_filter(c, s, n);
+
+        // The conv layer that embeds the algorithm-specific features
+        Func head1_conv("head1_conv");
+        RDom r_head1(0, head1_w, 0, head1_h);
+        head1_conv(c, w) = head1_bias(c);
+        head1_conv(c, w) += (squashed_head1_filter_broadcast(c, w, r_head1.x, r_head1.y) *
+                            pipeline_features(r_head1.x, r_head1.y, w));
+
+        // The conv layer that embeds the schedule-specific features
+        Func head2_conv("head2_conv");
+        RDom r_head2(0, head2_w);
+        head2_conv(c, w, n) = head2_bias(c);
+        head2_conv(c, w, n) += head2_filter(c, r_head2) * normalized_schedule_features(n, r_head2, w);
+
+        Func head2_relu("head2_relu");
+        head2_relu(c, w, n) = max(head2_conv(c, w, n), 0);
+
+        // The conv layer that computes coefficients
+        Func conv1_stage1("conv1_stage1");
+        RDom r1_stage1(0, head1_channels);
+        conv1_stage1(c, w) = bias1(c);
+        conv1_stage1(c, w) += filter1(c, r1_stage1.x) * head1_conv(r1_stage1.x, w);
+
+        Func conv1_stage2("conv1_stage2");
+        RDom r1_stage2(0, head2_channels);
+        conv1_stage2(c, w, n) = conv1_stage1(c, w);
+        conv1_stage2(c, w, n) += filter1(c, head1_filter.dim(0).extent() + r1_stage2.x) * head2_relu(r1_stage2.x, w, n);
+
+        Func relu1("relu1");
+        relu1(c, w, n) = max(conv1_stage2(c, w, n), 0);
+
+        // Calculate the cost using the coefficients
+        Func runtime_per_stage;
+        runtime_per_stage(n, w) = 1.0f; // Simplified for now
+
+        // Sum across the stages
+        Func prediction;
+        RDom r_reduce(0, num_stages);
+        prediction(n) += runtime_per_stage(n, r_reduce);
+
+        prediction_output(n) = prediction(n);
+
+        if (!training) {
+            loss_output() = 0.0f;
+        } else {
+            // Training mode logic
+            RDom r_batch(0, batch_size);
+            Expr loss = sum(0.0f); // Simplified
+            loss_output() = loss;
+
+            // Backpropagate
+            Derivative d_loss_d = propagate_adjoints(loss_output);
+
+            Weight *weights[] = {&head1_filter, &head1_bias,
+                                &head2_filter, &head2_bias,
+                                &filter1, &bias1};
+
+            for (Weight *w : weights) {
+                w->backprop(d_loss_d, learning_rate, timestep);
+            }
+        }
+
+        // Set shapes for all weights
+        head1_filter.set_shape(head1_channels, head1_w, head1_h);
+        head1_bias.set_shape(head1_channels);
+        head2_filter.set_shape(head2_channels, head2_w);
+        head2_bias.set_shape(head2_channels);
+        filter1.set_shape(conv1_channels, head1_channels + head2_channels);
+        bias1.set_shape(conv1_channels);
+
         // Set estimates
-        num_stages.set_estimate(1);
-        batch_size.set_estimate(1);
-        num_cores.set_estimate(8);
-        costs.set_estimates({{0, batch_size}});
-        
-        // Simple scheduling
-        costs.compute_root();
-    }
-};
+        num_cores.set_estimate(32);
+        reference.set_estimate(0);
+        batch_size.set_estimate(80);
+        num_stages.set_estimate(13);
+        prediction_output.set_estimates({{0, 80}});
+        learning_rate.set_estimate(0.001f);
+        timestep.set_estimate(37);
+        pipeline_features.set_estimates({{0, head1_w}, {0, head1_h}, {0, 13}});
+        schedule_features.set_estimates({{0, 80}, {0, head2_w}, {0, 13}});
+        true_runtime.set_estimates({{0, 80}});
 
-// Train cost model generator that matches the function signature expected by DefaultCostModel.cpp
-class TrainCostModel : public Generator<TrainCostModel> {
-protected:
-    bool allow_out_of_order_inputs_and_outputs() const override {
-        return true;
-    }
-
-public:
-    // Inputs - match the signature in DefaultCostModel.cpp:backprop()
-    GeneratorInput<int> num_stages{"num_stages", 1};
-    GeneratorInput<int> batch_size{"batch_size", 1};
-    GeneratorInput<int> num_cores{"num_cores", 1};
-    GeneratorInput<Buffer<float>> pipeline_feat_queue{"pipeline_feat_queue", 3};
-    GeneratorInput<Buffer<float>> schedule_feat_queue{"schedule_feat_queue", 3};
-    GeneratorInput<Buffer<float>> head1_filter{"head1_filter", 2};
-    GeneratorInput<Buffer<float>> head1_bias{"head1_bias", 1};
-    GeneratorInput<Buffer<float>> head2_filter{"head2_filter", 2};
-    GeneratorInput<Buffer<float>> head2_bias{"head2_bias", 1};
-    GeneratorInput<Buffer<float>> conv1_filter{"conv1_filter", 4};
-    GeneratorInput<Buffer<float>> conv1_bias{"conv1_bias", 1};
-    GeneratorInput<float> learning_rate{"learning_rate", 0.001f};
-    GeneratorInput<int> timestep{"timestep", 0};
-    GeneratorInput<int> fastest_idx{"fastest_idx", 0};
-    GeneratorInput<Buffer<float>> true_runtimes{"true_runtimes", 1};
-    
-    // Outputs
-    GeneratorOutput<Buffer<float>> head1_filter_update{"head1_filter_update", 3};
-    GeneratorOutput<Buffer<float>> head1_bias_update{"head1_bias_update", 2};
-    GeneratorOutput<Buffer<float>> head2_filter_update{"head2_filter_update", 3};
-    GeneratorOutput<Buffer<float>> head2_bias_update{"head2_bias_update", 2};
-    GeneratorOutput<Buffer<float>> conv1_filter_update{"conv1_filter_update", 5};
-    GeneratorOutput<Buffer<float>> conv1_bias_update{"conv1_bias_update", 2};
-    GeneratorOutput<Buffer<float>> costs{"costs", 1};
-    GeneratorOutput<Buffer<float>> loss{"loss", 0};
-
-    // PyTorch model and device
-    std::shared_ptr<torch::jit::Module> pytorch_model;
-    torch::Device device;
-
-    // Constructor
-    TrainCostModel() : device(torch::kCPU) {
-        // Force CPU usage regardless of CUDA availability
-        std::cout << "Using CPU for model training" << std::endl;
-
-        // Set environment variable to disable CUDA
-        setenv("CUDA_VISIBLE_DEVICES", "", 1);
-
-        // Load the PyTorch model
-        try {
-            pytorch_model = std::make_shared<torch::jit::Module>(torch::jit::load("/home/kowrisaan/fyp/Halide/src/autoschedulers/adams2019/model.pt", device));
-            // Set to training mode
-            pytorch_model->train();
-        } catch (const c10::Error& e) {
-            std::cerr << "Error loading the PyTorch model for training: " << e.what() << std::endl;
-            // Don't throw, just continue with a warning
-            std::cerr << "Continuing without model - will use default training" << std::endl;
+        // SCHEDULE
+        if (training && !using_autoscheduler()) {
+            do_cost_model_schedule(get_pipeline());
+        } else if (using_autoscheduler()) {
+            // Do nothing
+        } else {
+            // Inference schedule
+            Var no;
+            prediction_output.specialize(batch_size < 8).split(n, no, n, 1);
+            prediction_output.compute_root().split(n, no, n, 8).parallel(no);
+            prediction_output.bound(n, 0, batch_size);
         }
     }
 
-    void generate() {
-        Var n("n");
-        
-        // Simple implementation for the training generator
-        // This should match what DefaultCostModel.cpp expects in backprop()
-        
-        // For now, just provide dummy outputs
-        head1_filter_update(n, m, b) = 0.0f;
-        head1_bias_update(n, b) = 0.0f;
-        head2_filter_update(n, m, b) = 0.0f;
-        head2_bias_update(n, b) = 0.0f;
-        conv1_filter_update(n, m, r, s, b) = 0.0f;
-        conv1_bias_update(n, b) = 0.0f;
-        costs(n) = 0.0f;
-        loss() = 0.0f;
-        
-        // Set estimates
-        num_stages.set_estimate(1);
-        batch_size.set_estimate(32);
-        num_cores.set_estimate(8);
-        costs.set_estimates({{0, batch_size}});
-        
-        std::cout << "TrainCostModel generator called - this is a placeholder implementation" << std::endl;
-    }
-
 private:
-    Var n{"n"}, m{"m"}, r{"r"}, s{"s"}, b{"b"};
+    Expr sigmoid(const Expr &e) {
+        return 1 / (1 + exp(-e));
+    }
 };
 
-// Register both generators
-HALIDE_REGISTER_GENERATOR(CostModel, cost_model)
-HALIDE_REGISTER_GENERATOR(TrainCostModel, train_cost_model)
+using CostModelInference = CostModel<false>;
+using CostModelTraining = CostModel<true>;
+
+HALIDE_REGISTER_GENERATOR(CostModelInference, cost_model);
+HALIDE_REGISTER_GENERATOR(CostModelTraining, train_cost_model);
