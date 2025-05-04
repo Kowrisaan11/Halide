@@ -223,42 +223,39 @@ public:
         bias1.set_shape(conv1_channels);
         
         // Set estimates for buffer inputs using proper Halide Region syntax
+        // Fix: Convert std::vector<std::pair<int, int>> to Region (std::vector<Range>)
         {
-            std::vector<std::pair<int, int>> estimates = {
-                {0, head1_w},
-                {0, head1_h},
-                {0, 13} // num_stages value
-            };
+            Region estimates;
+            estimates.push_back(Range(0, head1_w));
+            estimates.push_back(Range(0, head1_h));
+            estimates.push_back(Range(0, 13)); // num_stages value
             pipeline_features.set_estimates(estimates);
         }
         
         {
-            std::vector<std::pair<int, int>> estimates = {
-                {0, 80}, // batch_size value
-                {0, head2_w},
-                {0, 13} // num_stages value
-            };
+            Region estimates;
+            estimates.push_back(Range(0, 80)); // batch_size value
+            estimates.push_back(Range(0, head2_w));
+            estimates.push_back(Range(0, 13)); // num_stages value
             schedule_features.set_estimates(estimates);
         }
         
         {
-            std::vector<std::pair<int, int>> estimates = {
-                {0, 80} // batch_size value
-            };
+            Region estimates;
+            estimates.push_back(Range(0, 80)); // batch_size value
             true_runtime.set_estimates(estimates);
         }
         
         // Set estimates for buffer outputs
         {
-            std::vector<std::pair<int, int>> estimates = {
-                {0, 80} // batch_size value
-            };
+            Region estimates;
+            estimates.push_back(Range(0, 80)); // batch_size value
             prediction_output.set_estimates(estimates);
         }
         
         // 0-dimensional buffer needs empty estimates
         {
-            std::vector<std::pair<int, int>> estimates;
+            Region estimates;
             loss_output.set_estimates(estimates);
         }
 
