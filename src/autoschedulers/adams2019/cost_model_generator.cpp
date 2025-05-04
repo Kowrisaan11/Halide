@@ -31,15 +31,12 @@ struct ModelWeight<false> : public GeneratorInput<Buffer<float>> {
     void set_shape(int s0 = 0, int s1 = 0, int s2 = 0) {
         if (s0) {
             dim(0).set_bounds(0, s0);
-            dim(0).set_estimate(0, s0);
         }
         if (s1) {
             dim(1).set_bounds(0, s1);
-            dim(1).set_estimate(0, s1);
         }
         if (s2) {
             dim(2).set_bounds(0, s2);
-            dim(2).set_estimate(0, s2);
         }
     }
 };
@@ -86,6 +83,7 @@ struct ModelWeight<true> : public GeneratorInput<Buffer<float>> {
     }
 
     void set_shape(int s0 = 0, int s1 = 0, int s2 = 0) {
+        // Implementation from original code
         if (s0) {
             dim(0).set_bounds(0, s0);
             dim(0).set_estimate(0, s0);
@@ -114,6 +112,11 @@ struct ModelWeight<true> : public GeneratorInput<Buffer<float>> {
         grad.dim(dimensions()).set_estimate(0, 4);
     }
 };
+
+// Helper function for log with protection against negative values
+Expr fast_log(Expr e) {
+    return log(max(1e-20f, e));
+}
 
 template<bool training>
 class CostModel : public Generator<CostModel<training>> {
@@ -174,6 +177,14 @@ public:
     std::shared_ptr<torch::jit::Module> pytorch_model;
     torch::Device device;
 
+    // Network dimensions (should match NetworkSize.h)
+    const int head1_channels = 8;
+    const int head1_w = 3;
+    const int head1_h = 3;
+    const int head2_channels = 8;
+    const int head2_w = 32;
+    const int conv1_channels = 1;
+
     // Constructor
     CostModel() : device(torch::kCPU) {
         // Force CPU usage regardless of CUDA availability
@@ -192,6 +203,7 @@ public:
             }
         } catch (const c10::Error& e) {
             std::cerr << "Error loading the PyTorch model: " << e.what() << std::endl;
+            // Don't throw, just continue with a warning
             std::cerr << "Continuing without model - will use default cost model" << std::endl;
         }
     }
@@ -199,29 +211,30 @@ public:
     void generate() {
         Var c("c"), w("w"), n("n"), j("j"), s("s");
 
-        // Set estimates for all inputs FIRST, before using them
+        // Initialize all inputs with proper estimates FIRST
         num_cores.set_estimate(32);
         reference.set_estimate(0);
         batch_size.set_estimate(80);
         num_stages.set_estimate(13);
         learning_rate.set_estimate(0.001f);
         timestep.set_estimate(37);
-
-        // Use a constant value for RDom bounds
-        const int batch_size_val = 80;
-
-        // Set shapes for all weights early
+        
+        // Initialize network dimensions
         head1_filter.set_shape(head1_channels, head1_w, head1_h);
         head1_bias.set_shape(head1_channels);
         head2_filter.set_shape(head2_channels, head2_w);
         head2_bias.set_shape(head2_channels);
         filter1.set_shape(conv1_channels, head1_channels + head2_channels);
         bias1.set_shape(conv1_channels);
-
-        // Set estimates for inputs
-        pipeline_features.set_estimates({{0, head1_w}, {0, head1_h}, {0, 13}});
-        schedule_features.set_estimates({{0, batch_size_val}, {0, head2_w}, {0, 13}});
-        true_runtime.set_estimates({{0, batch_size_val}});
+        
+        // Set estimates for buffer inputs
+        pipeline_features.set_estimates({{0, head1_w}, {0, head1_h}, {0, num_stages.get_estimate()}});
+        schedule_features.set_estimates({{0, batch_size.get_estimate()}, {0, head2_w}, {0, num_stages.get_estimate()}});
+        true_runtime.set_estimates({{0, batch_size.get_estimate()}});
+        
+        // Set estimates for buffer outputs
+        prediction_output.set_estimates({{0, batch_size.get_estimate()}});
+        loss_output.set_estimates({});  // 0-dimensional buffer
 
         // Implement the original cost model logic
         Func normalized_schedule_features("normalized_schedule_features");
@@ -239,7 +252,7 @@ public:
         Func head1_conv("head1_conv");
         RDom r_head1(0, head1_w, 0, head1_h);
         head1_conv(c, w) = head1_bias(c);
-        head1_conv(c, w) += (squashed_head1_filter_broadcast(c, w, r_head1.x, r_head1.y) *
+        head1_conv(c, w) += (squashed_head1_filter(c, r_head1.x, r_head1.y) *
                             pipeline_features(r_head1.x, r_head1.y, w));
 
         // The conv layer that embeds the schedule-specific features
@@ -249,7 +262,7 @@ public:
         head2_conv(c, w, n) += head2_filter(c, r_head2) * normalized_schedule_features(n, r_head2, w);
 
         Func head2_relu("head2_relu");
-        head2_relu(c, w, n) = max(head2_conv(c, w, n), 0);
+        head2_relu(c, w, n) = max(head2_conv(c, w, n), 0.0f);
 
         // The conv layer that computes coefficients
         Func conv1_stage1("conv1_stage1");
@@ -260,80 +273,58 @@ public:
         Func conv1_stage2("conv1_stage2");
         RDom r1_stage2(0, head2_channels);
         conv1_stage2(c, w, n) = conv1_stage1(c, w);
-        conv1_stage2(c, w, n) += filter1(c, head1_filter.dim(0).extent() + r1_stage2.x) * head2_relu(r1_stage2.x, w, n);
+        conv1_stage2(c, w, n) += filter1(c, head1_channels + r1_stage2.x) * head2_relu(r1_stage2.x, w, n);
 
         Func relu1("relu1");
-        relu1(c, w, n) = max(conv1_stage2(c, w, n), 0);
+        relu1(c, w, n) = max(conv1_stage2(c, w, n), 0.0f);
 
         // Calculate the cost using the coefficients
         Func runtime_per_stage("runtime_per_stage");
-        runtime_per_stage(n, w) = relu1(0, w, n); // Simplified to use first channel
+        runtime_per_stage(n, w) = 1.0f + relu1(0, w, n); // Basic cost model
 
         // Sum across the stages
         Func prediction("prediction");
-        prediction(n) = 0.0f;
-        RDom r_reduce(0, num_stages, "r_reduce");
-        prediction(n) += runtime_per_stage(n, r_reduce);
+        RDom r_reduce(0, num_stages);
+        prediction(n) = sum(runtime_per_stage(n, r_reduce));
 
         prediction_output(n) = prediction(n);
 
-        // Define loss functions for both training and non-training modes
-        if (training) {
-            // Training mode: compute loss as mean squared error
+        // Define loss function
+        Func loss_func("loss_func");
+        if (!training) {
+            // For inference mode, just set loss to zero
+            loss_func() = 0.0f;
+        } else {
+            // Training mode logic - compute mean squared error
             Func squared_error("squared_error");
             squared_error(n) = pow(prediction_output(n) - true_runtime(n), 2);
-
-            // Compute loss as a scalar
-            Func loss_func("loss_func");
-            RDom r_batch(0, batch_size_val, "r_batch");
-            loss_func() = 0.0f;
-            loss_func() += squared_error(r_batch) / cast<float>(batch_size_val); // Normalize by batch size
-
-            // Assign to loss_output
-            loss_output() = loss_func();
-
-            // Note: Backpropagation is skipped as in the original code
-            // If needed, implement gradient computation carefully to avoid undefined Funcs
-        } else {
-            // Inference mode: set loss to zero
-            Func loss_func("loss_func");
-            loss_func() = 0.0f;
-            loss_output() = loss_func();
+            
+            // Sum over the batch using a reduction domain
+            RDom r_batch(0, batch_size);
+            loss_func() = sum(squared_error(r_batch)) / cast<float>(batch_size);
+            
+            // If using backpropagation in a real implementation, you would add that here
         }
-
-        // Set estimates for outputs
-        prediction_output.set_estimates({{0, batch_size_val}});
-        loss_output.set_estimates({});
+        
+        loss_output() = loss_func();
 
         // SCHEDULE
         if (training && !using_autoscheduler()) {
-            // Apply custom schedule for training
             do_cost_model_schedule(get_pipeline());
         } else if (using_autoscheduler()) {
-            // Let autoscheduler handle it
+            // Do nothing
         } else {
             // Inference schedule
-            Var no("no");
+            Var no;
+            prediction_output.specialize(batch_size < 8).split(n, no, n, 1);
             prediction_output.compute_root().split(n, no, n, 8).parallel(no);
-            prediction_output.bound(n, 0, batch_size_val);
-
-            // Compute intermediate Funcs inline or at root to ensure definition
-            normalized_schedule_features.compute_root();
-            squashed_head1_filter.compute_root();
-            squashed_head1_filter_broadcast.compute_root();
-            head1_conv.compute_root();
-            head2_conv.compute_root();
-            head2_relu.compute_root();
-            conv1_stage1.compute_root();
-            conv1_stage2.compute_root();
-            relu1.compute_root();
-            runtime_per_stage.compute_root();
+            prediction_output.bound(n, 0, batch_size);
         }
     }
 
 private:
     Expr sigmoid(const Expr &e) {
-        return 1 / (1 + exp(-e));
+        return 1.0f / (1.0f + exp(-e));
     }
 };
 
