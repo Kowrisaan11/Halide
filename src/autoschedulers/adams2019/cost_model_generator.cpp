@@ -246,6 +246,7 @@ public:
 
         // Sum across the stages
         Func prediction;
+        prediction(n) = 0.0f;  // Initialize to zero
         RDom r_reduce(0, num_stages);
         prediction(n) += runtime_per_stage(n, r_reduce);
 
@@ -254,9 +255,15 @@ public:
         if (!training) {
             loss_output() = 0.0f;
         } else {
-            // Training mode logic
+            // Training mode logic - CORRECTED to properly use RDom
             RDom r_batch(0, batch_size);
-            Expr loss = sum(0.0f); // Simplified
+            
+            // Compute squared error loss
+            Func squared_error;
+            squared_error(n) = pow(prediction_output(n) - true_runtime(n), 2);
+            
+            // Sum over the batch using the reduction domain
+            Expr loss = sum(squared_error(r_batch));
             loss_output() = loss;
 
             // Backpropagate
