@@ -113,11 +113,6 @@ struct ModelWeight<true> : public GeneratorInput<Buffer<float>> {
     }
 };
 
-// Helper function for log with protection against negative values
-Expr fast_log(Expr e) {
-    return log(max(1e-20f, e));
-}
-
 template<bool training>
 class CostModel : public Generator<CostModel<training>> {
 protected:
@@ -170,7 +165,7 @@ public:
     // The predicted runtimes
     Output<Buffer<float>> prediction_output{"prediction_output", 1};
 
-    // The loss - changed to a 0-dimensional buffer output
+    // The loss - 0-dimensional buffer output
     Output<Buffer<float>> loss_output{"loss_output", 0};
 
     // PyTorch model and device
@@ -227,26 +222,53 @@ public:
         filter1.set_shape(conv1_channels, head1_channels + head2_channels);
         bias1.set_shape(conv1_channels);
         
-        // Set estimates for buffer inputs
-        pipeline_features.set_estimates({{0, head1_w}, {0, head1_h}, {0, num_stages.get_estimate()}});
-        schedule_features.set_estimates({{0, batch_size.get_estimate()}, {0, head2_w}, {0, num_stages.get_estimate()}});
-        true_runtime.set_estimates({{0, batch_size.get_estimate()}});
+        // Set estimates for buffer inputs using proper Halide Region syntax
+        {
+            std::vector<std::pair<int, int>> estimates = {
+                {0, head1_w},
+                {0, head1_h},
+                {0, 13} // num_stages value
+            };
+            pipeline_features.set_estimates(estimates);
+        }
+        
+        {
+            std::vector<std::pair<int, int>> estimates = {
+                {0, 80}, // batch_size value
+                {0, head2_w},
+                {0, 13} // num_stages value
+            };
+            schedule_features.set_estimates(estimates);
+        }
+        
+        {
+            std::vector<std::pair<int, int>> estimates = {
+                {0, 80} // batch_size value
+            };
+            true_runtime.set_estimates(estimates);
+        }
         
         // Set estimates for buffer outputs
-        prediction_output.set_estimates({{0, batch_size.get_estimate()}});
-        loss_output.set_estimates({});  // 0-dimensional buffer
+        {
+            std::vector<std::pair<int, int>> estimates = {
+                {0, 80} // batch_size value
+            };
+            prediction_output.set_estimates(estimates);
+        }
+        
+        // 0-dimensional buffer needs empty estimates
+        {
+            std::vector<std::pair<int, int>> estimates;
+            loss_output.set_estimates(estimates);
+        }
 
         // Implement the original cost model logic
         Func normalized_schedule_features("normalized_schedule_features");
-        normalized_schedule_features(n, c, s) = fast_log(schedule_features(n, c, s) + 1);
+        normalized_schedule_features(n, c, s) = log(max(1e-20f, schedule_features(n, c, s) + 1));
 
         // Force the weights of the algorithm embedding layer to be positive and bounded
         Func squashed_head1_filter("squashed_head1_filter");
         squashed_head1_filter(c, s, n) = sigmoid(head1_filter(c, s, n));
-
-        // Explicitly broadcast the weights across the batch
-        Func squashed_head1_filter_broadcast("squashed_head1_filter_broadcast");
-        squashed_head1_filter_broadcast(c, w, s, n) = squashed_head1_filter(c, s, n);
 
         // The conv layer that embeds the algorithm-specific features
         Func head1_conv("head1_conv");
