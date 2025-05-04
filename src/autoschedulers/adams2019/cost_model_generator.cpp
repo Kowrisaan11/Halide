@@ -6,45 +6,47 @@ using namespace Halide;
 
 // Template for inference/training
 template <bool training>
-class CostModel : public Generator<CostModel<training>> {
+// In your CostModel generator class:
+class CostModel : public Generator<CostModel> {
 public:
-    // Inputs
-    GeneratorInput<Buffer<float>> pipeline_features{"pipeline_features", 3};
-    GeneratorInput<Buffer<float>> schedule_features{"schedule_features", 3};
-    GeneratorInput<Buffer<float>> true_runtime{"true_runtime", 1};
-    GeneratorInput<int> batch_size{"batch_size", 1};
-    GeneratorInput<int> num_stages{"num_stages", 1};
+    // Input buffers
+    Input<Buffer<float>> pipeline_features{"pipeline_features", 3};
+    Input<Buffer<float>> schedule_features{"schedule_features", 3};
+    Input<Buffer<float>> true_runtime{"true_runtime", 1};
+    
+    // Weight buffers
+    Input<Buffer<float>> head1_filter{"head1_filter", 2};
+    Input<Buffer<float>> head1_bias{"head1_bias", 1};
+    Input<Buffer<float>> head2_filter{"head2_filter", 2};
+    Input<Buffer<float>> head2_bias{"head2_bias", 1};
+    Input<Buffer<float>> conv1_filter{"conv1_filter", 2};
+    Input<Buffer<float>> conv1_bias{"conv1_bias", 1};
 
-    // Outputs
-    GeneratorOutput<Buffer<float>> prediction_output{"prediction_output", 1};
-    GeneratorOutput<Buffer<float>> loss_output{"loss_output", 0};
+    // Scalar parameters
+    Input<int32_t> batch_size{"batch_size", 1};
+    Input<int32_t> num_stages{"num_stages", 1};
+    Input<int32_t> num_cores{"num_cores", 1};
+    Input<float> learning_rate{"learning_rate", 1.0f};
+    Input<int32_t> timestep{"timestep", 0};
+
+    // Output buffers
+    Output<Buffer<float>> prediction_output{"prediction_output", 1};
+    Output<Buffer<float>> loss_output{"loss_output", 1};
 
     void generate() {
-        Var n("n");
+        // Your implementation here
+        // ... (maintain existing pipeline construction code)
 
-        // Dummy prediction: just sum the first feature dimension for each batch
-        Func pred("pred");
-        RDom r(0, pipeline_features.dim(0).extent());
-        pred(n) = sum(pipeline_features(r, 0, 0)); // Just a dummy op
-
-        prediction_output(n) = pred(n);
-
-        // Dummy loss: squared error over batch
-        Func loss("loss");
-        RDom rb(0, 80); // Use the same constant as set_estimate below
-        loss() = 0.0f;
-        loss() += pow(prediction_output(rb) - true_runtime(rb), 2);
-
-        loss_output = loss;
-
-        // Set estimates (must use constants!)
-        pipeline_features.set_estimates({{0, 3}, {0, 3}, {0, 13}});
-        schedule_features.set_estimates({{0, 80}, {0, 3}, {0, 13}});
-        true_runtime.set_estimates({{0, 80}});
-        batch_size.set_estimate(80);
-        num_stages.set_estimate(13);
-        prediction_output.set_estimates({{0, 80}});
-        loss_output.set_estimates({}); // 0-dimensional
+        // Set estimates for ALL inputs
+        pipeline_features.set_estimates({{0, 256}, {0, 256}, {0, 3}});
+        schedule_features.set_estimates({{0, 256}, {0, 256}, {0, 3}});
+        true_runtime.set_estimates({{0, 256}});
+        head1_filter.set_estimates({{0, 64}, {0, 3}});
+        head1_bias.set_estimates({{0, 64}});
+        // ... set estimates for other weights
+        batch_size.set_estimate(256);
+        num_stages.set_estimate(3);
+        num_cores.set_estimate(8);
     }
 };
 
