@@ -228,24 +228,24 @@ public:
         pipeline_features.dim(0).set_estimate(0, head1_w);
         pipeline_features.dim(1).set_bounds(0, head1_h);
         pipeline_features.dim(1).set_estimate(0, head1_h);
-        pipeline_features.dim(2).set_bounds(0, num_stages.get_estimate());
-        pipeline_features.dim(2).set_estimate(0, num_stages.get_estimate());
+        pipeline_features.dim(2).set_bounds(0, 13); // num_stages value
+        pipeline_features.dim(2).set_estimate(0, 13);
         
         // Schedule features: 3D buffer
-        schedule_features.dim(0).set_bounds(0, batch_size.get_estimate());
-        schedule_features.dim(0).set_estimate(0, batch_size.get_estimate());
+        schedule_features.dim(0).set_bounds(0, 80); // batch_size value
+        schedule_features.dim(0).set_estimate(0, 80);
         schedule_features.dim(1).set_bounds(0, head2_w);
         schedule_features.dim(1).set_estimate(0, head2_w);
-        schedule_features.dim(2).set_bounds(0, num_stages.get_estimate());
-        schedule_features.dim(2).set_estimate(0, num_stages.get_estimate());
+        schedule_features.dim(2).set_bounds(0, 13); // num_stages value
+        schedule_features.dim(2).set_estimate(0, 13);
         
         // True runtime: 1D buffer
-        true_runtime.dim(0).set_bounds(0, batch_size.get_estimate());
-        true_runtime.dim(0).set_estimate(0, batch_size.get_estimate());
+        true_runtime.dim(0).set_bounds(0, 80); // batch_size value
+        true_runtime.dim(0).set_estimate(0, 80);
         
         // Set estimates for buffer outputs - 1D output with range
-        prediction_output.dim(0).set_bounds(0, batch_size.get_estimate());
-        prediction_output.dim(0).set_estimate(0, batch_size.get_estimate());
+        prediction_output.dim(0).set_bounds(0, 80); // batch_size value
+        prediction_output.dim(0).set_estimate(0, 80);
         
         // 0-dimensional buffer (scalar) doesn't need dimension estimates
         // loss_output is already 0-dimensional so no estimates needed
