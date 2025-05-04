@@ -165,8 +165,8 @@ public:
     // The predicted runtimes
     Output<Buffer<float>> prediction_output{"prediction_output", 1};
 
-    // The loss - changed to a scalar output
-    Output<float> loss_output{"loss_output"};
+    // The loss - changed to a 0-dimensional buffer output
+    Output<Buffer<float>> loss_output{"loss_output", 0};
 
     // PyTorch model and device
     std::shared_ptr<torch::jit::Module> pytorch_model;
@@ -252,25 +252,28 @@ public:
 
         prediction_output(n) = prediction(n);
 
+        // Define loss functions for both training and non-training modes
+        Func loss_func;
         if (!training) {
-            loss_output = 0.0f;
+            // For inference mode, just set loss to zero
+            loss_func() = 0.0f;
         } else {
-            // Training mode logic - CORRECTED to properly use RDom and avoid Tuple issues
-            RDom r_batch(0, batch_size);
+            // Training mode logic - CORRECTED to properly use RDom and Func
+            RDom r_batch(0, evaluate<int>(batch_size));
             
             // Compute squared error loss
             Func squared_error;
             squared_error(n) = pow(prediction_output(n) - true_runtime(n), 2);
             
             // Sum over the batch using the reduction domain
-            // Use a separate Func to compute the loss to avoid Tuple construction issues
-            Func loss_func;
             loss_func() = 0.0f;
             loss_func() += squared_error(r_batch);
-            
-            // Assign the scalar loss value
-            loss_output = loss_func();
+        }
+        
+        // Assign the Func to loss_output
+        loss_output = loss_func;
 
+        if (training) {
             // Backpropagate
             Derivative d_loss_d = propagate_adjoints(loss_output);
 
