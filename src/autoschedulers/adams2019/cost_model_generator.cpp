@@ -162,10 +162,10 @@ public:
     // The true runtimes obtained by benchmarking
     Input<Buffer<float>> true_runtime{"true_runtime", 1};
 
-    // The predicted runtimes
+    // The predicted runtimes - 1D buffer for batch predictions
     Output<Buffer<float>> prediction_output{"prediction_output", 1};
 
-    // The loss - 0-dimensional buffer output
+    // The loss - 0-dimensional buffer output (scalar)
     Output<Buffer<float>> loss_output{"loss_output", 0};
 
     // PyTorch model and device
@@ -222,42 +222,33 @@ public:
         filter1.set_shape(conv1_channels, head1_channels + head2_channels);
         bias1.set_shape(conv1_channels);
         
-        // Set estimates for buffer inputs using proper Halide Region syntax
-        // Fix: Convert std::vector<std::pair<int, int>> to Region (std::vector<Range>)
-        {
-            Region estimates;
-            estimates.push_back(Range(0, head1_w));
-            estimates.push_back(Range(0, head1_h));
-            estimates.push_back(Range(0, 13)); // num_stages value
-            pipeline_features.set_estimates(estimates);
-        }
+        // Set estimates for buffer inputs using dimension-specific methods
+        // Pipeline features: 3D buffer
+        pipeline_features.dim(0).set_bounds(0, head1_w);
+        pipeline_features.dim(0).set_estimate(0, head1_w);
+        pipeline_features.dim(1).set_bounds(0, head1_h);
+        pipeline_features.dim(1).set_estimate(0, head1_h);
+        pipeline_features.dim(2).set_bounds(0, num_stages.get_estimate());
+        pipeline_features.dim(2).set_estimate(0, num_stages.get_estimate());
         
-        {
-            Region estimates;
-            estimates.push_back(Range(0, 80)); // batch_size value
-            estimates.push_back(Range(0, head2_w));
-            estimates.push_back(Range(0, 13)); // num_stages value
-            schedule_features.set_estimates(estimates);
-        }
+        // Schedule features: 3D buffer
+        schedule_features.dim(0).set_bounds(0, batch_size.get_estimate());
+        schedule_features.dim(0).set_estimate(0, batch_size.get_estimate());
+        schedule_features.dim(1).set_bounds(0, head2_w);
+        schedule_features.dim(1).set_estimate(0, head2_w);
+        schedule_features.dim(2).set_bounds(0, num_stages.get_estimate());
+        schedule_features.dim(2).set_estimate(0, num_stages.get_estimate());
         
-        {
-            Region estimates;
-            estimates.push_back(Range(0, 80)); // batch_size value
-            true_runtime.set_estimates(estimates);
-        }
+        // True runtime: 1D buffer
+        true_runtime.dim(0).set_bounds(0, batch_size.get_estimate());
+        true_runtime.dim(0).set_estimate(0, batch_size.get_estimate());
         
-        // Set estimates for buffer outputs
-        {
-            Region estimates;
-            estimates.push_back(Range(0, 80)); // batch_size value
-            prediction_output.set_estimates(estimates);
-        }
+        // Set estimates for buffer outputs - 1D output with range
+        prediction_output.dim(0).set_bounds(0, batch_size.get_estimate());
+        prediction_output.dim(0).set_estimate(0, batch_size.get_estimate());
         
-        // 0-dimensional buffer needs empty estimates
-        {
-            Region estimates;
-            loss_output.set_estimates(estimates);
-        }
+        // 0-dimensional buffer (scalar) doesn't need dimension estimates
+        // loss_output is already 0-dimensional so no estimates needed
 
         // Implement the original cost model logic
         Func normalized_schedule_features("normalized_schedule_features");
