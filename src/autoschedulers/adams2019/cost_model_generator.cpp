@@ -272,10 +272,12 @@ public:
         features["bytes_at_task"] = bytes_at_task;
         
         // Add derived features that might be needed by your model
-        features["memory_pressure"] = bytes_at_production > 0 
-            ? working_set / bytes_at_production : 0.0f;
-        features["bytes_per_vector"] = num_vectors > 0 
-            ? bytes_at_production / num_vectors : 0.0f;
+        features["memory_pressure"] = select(bytes_at_production > 0, 
+                                    working_set / bytes_at_production, 
+                                    0.0f);
+        features["bytes_per_vector"] = select(num_vectors > 0,
+                                     bytes_at_production / num_vectors,
+                                     0.0f);
         features["total_parallelism"] = inner_parallelism * outer_parallelism;
         
         return features;
