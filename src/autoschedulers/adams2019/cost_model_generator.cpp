@@ -6,7 +6,7 @@
 #include "Halide.h"
 #include "NetworkSize.h"
 
-using namespace Halide;
+using namespace Halid;
 using json = nlohmann::json;
 
 // Struct to hold the scaler parameters
@@ -410,4 +410,3 @@ using CostModelTraining = CostModel<true>;
 
 HALIDE_REGISTER_GENERATOR(CostModelInference, cost_model);
 HALIDE_REGISTER_GENERATOR(CostModelTraining, train_cost_model);
-
