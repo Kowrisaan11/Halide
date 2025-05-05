@@ -1,6 +1,3 @@
-// This file defines our cost model as a Halide generator that uses
-// an external PyTorch model for inference.
-
 #include <utility>
 #include <fstream>
 #include <torch/script.h>
@@ -27,8 +24,6 @@ struct YScalerParams {
 };
 
 // A model weight is either just an input, or an input and an output
-// (the updated weights and the ADAM state) depending on whether we're
-// doing inference or training.
 template<bool training>
 struct ModelWeight;
 
@@ -192,17 +187,15 @@ public:
     
     void load_pytorch_model() {
         try {
-            // Load the PyTorch model
-            pytorch_model = torch::jit::load(model_path);
+            // Load the PyTorch model with explicit CPU mapping
+            pytorch_model = torch::jit::load(model_path, torch::kCPU);
             pytorch_model.eval();
             
             // Load the scaler parameters
             scaler_params = load_scaler_params(scaler_params_path);
             
             // Extract y_scaler parameters from the same file or load from a separate file
-            // For simplicity, we're assuming they're in the same file
             y_scaler_params = load_y_scaler_params(scaler_params_path);
-            
         } catch (const std::exception &e) {
             std::cerr << "Error loading model or parameters: " << e.what() << std::endl;
             exit(1);
@@ -317,9 +310,8 @@ public:
         // Ensure model is in evaluation mode
         pytorch_model.eval();
         
-        // Move input to the same device as the model
-        auto device = torch::kCPU;
-        torch::Tensor input = input_tensor.to(device);
+        // Move input to CPU (ensure we're not using CUDA)
+        torch::Tensor input = input_tensor.to(torch::kCPU);
         
         std::vector<torch::jit::IValue> inputs = {input};
         auto output = pytorch_model.forward(inputs).toTensor();
@@ -384,7 +376,8 @@ public:
         learning_rate.set_estimate(0.001f);
         timestep.set_estimate(37);
         pipeline_features.set_estimates({{0, head1_w}, {0, head1_h}, {0, 13}});
-        schedule_features.set_estimates({{0, head2_w}, {0, 13}});
+        // Fix the dimension mismatch in schedule_features estimates
+        schedule_features.set_estimates({{0, head2_w}, {0, head2_h}, {0, 13}});
         true_runtime.set_estimates({{0, 80}});
 
         // All the model weight shapes are statically known
