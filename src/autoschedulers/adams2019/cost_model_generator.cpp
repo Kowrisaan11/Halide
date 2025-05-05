@@ -140,7 +140,7 @@ YScalerParams load_y_scaler_params(const std::string &scaler_path) {
     } catch (const std::exception &e) {
         throw std::runtime_error("Failed to load Y scaler params from " + scaler_path + ": " + e.what());
     }
- /
+}
 
 template<bool training>
 class CostModel : public Generator<CostModel<training>> {
@@ -375,7 +375,7 @@ public:
             
             // Sum across the stages to get the total runtime
             Func prediction;
-            RDom r Reduce(0, num_stages);
+            RDom r_reduce(0, num_stages);
             prediction(n) += runtime_per_stage(n, r_reduce);
             
             prediction_output(n) = prediction(n);
