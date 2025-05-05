@@ -1,1 +1,20 @@
-{"X_scalar_center": [55.0, 263.351377, 2727202.0, 3411217.0, 2509573008.0, 76740.0, 1.4, 7.117647058823529, 51652580.0, 50455522.0, 2064336000.0, 1934868.0, 803158.0, 416.0, 138616288.0, 25522492.0, 10020804.0, 97357792.0, 97529272.0, 1250597582.0, 8.526315789473685, 6253634.0, 50455522.0, 138616288.0, 0.00039399481203180117, 0.2144286108975191, 1054368.9735449734, 0.5587535944424508, 24.0, 19.0, 1.2083333333333333, 3.950615333029465e-06, 13.0, 15.0, 3.0, 2.0, 0.0, 4.0, 3.0, 5.0, 4.0, 4.0, 22.0, 90.0, 16.0, 7.0, 7.0, 15.0, 7.0, 15.0, 0.0, 12.534577807641908, 16.041890080382434, 3.516327398502441], "X_scalar_scale": [129.0, 418.17931250000004, 4550596.0, 5646390.0, 5770532280.0, 238926.0, 0.6913422321097515, 1.0090744101633389, 57031984.0, 53753114.0, 2391397426.0, 24513346.0, 1840064.0, 208.0, 309779491.0, 100640079.0, 28063470.0, 241716880.0, 241844226.0, 1038249520.0, 0.7407407407407423, 10215528.0, 53753114.0, 309779491.0, 0.0010026295524813884, 1.0651354293424988, 1741112.9759869105, 1.439591560781642, 10.0, 9.0, 0.14285714285714302, 5.710185011751488e-06, 2.0, 22.0, 9.0, 2.0, 1.0, 3.0, 3.0, 5.0, 5.0, 5.0, 20.0, 54.0, 11.0, 4.0, 4.0, 7.0, 4.0, 7.0, 1.0, 1.3384810688509496, 1.0707412948852522, 1.9786385362827819], "y_center": [5.577279191671108], "y_scale": [1.3264014371070987], "feature_columns": ["cache_misses", "execution_time_ms", "sched_num_realizations", "sched_num_productions", "sched_points_computed_total", "sched_innermost_loop_extent", "sched_inner_parallelism", "sched_outer_parallelism", "sched_bytes_at_realization", "sched_bytes_at_production", "sched_bytes_at_root", "sched_unique_bytes_read_per_realization", "sched_working_set", "sched_vector_size", "sched_num_vectors", "sched_num_scalars", "sched_working_set_at_task", "sched_working_set_at_production", "sched_working_set_at_realization", "sched_working_set_at_root", "total_parallelism", "scheduling_count", "total_bytes_at_production", "total_vectors", "memory_pressure", "memory_utilization_ratio", "bytes_per_parallelism", "bytes_per_vector", "nodes_count", "edges_count", "node_edge_ratio", "nodes_per_schedule", "op_diversity", "op_add", "op_mul", "op_div", "op_eq", "op_lt", "op_le", "op_or", "op_min", "op_max", "op_constant", "op_variable", "op_funccall", "memory_transpose_0", "memory_slice_0", "memory_slice_3", "memory_broadcast_0", "memory_broadcast_3", "log_cache_hits", "log_bytes_processing_rate", "log_sched_bytes_at_task", "log_computation_efficiency"]}
+{
+  "feature_names": [
+    "num_realizations", "num_productions", "points_computed_per_realization", 
+    "points_computed_per_production", "points_computed_total", "inner_parallelism", 
+    "outer_parallelism", "bytes_at_realization", "bytes_at_production", "bytes_at_root", 
+    "working_set", "num_vectors", "num_scalars", "bytes_at_task", "memory_pressure", 
+    "bytes_per_vector", "total_parallelism"
+  ],
+  "means": [
+    1.0, 1.0, 1000.0, 1000.0, 10000.0, 1.0, 1.0, 1000.0, 
+    1000.0, 1000.0, 1000.0, 10.0, 10.0, 1000.0, 1.0, 100.0, 1.0
+  ],
+  "scales": [
+    1.0, 1.0, 500.0, 500.0, 5000.0, 1.0, 1.0, 500.0, 
+    500.0, 500.0, 500.0, 5.0, 5.0, 500.0, 1.0, 50.0, 1.0
+  ],
+  "mean": 0.0,
+  "scale": 1.0,
+  "is_log_transformed": false
+}
