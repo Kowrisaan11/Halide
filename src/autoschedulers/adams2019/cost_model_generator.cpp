@@ -1,29 +1,16 @@
 #include <utility>
-#include <fstream>
-#include <torch/script.h>
-#include <nlohmann/json.hpp>
 
 #include "Halide.h"
+
 #include "NetworkSize.h"
+#include "cost_model_schedule.h"
 
-using namespace Halid;
-using json = nlohmann::json;
-
-// Struct to hold the scaler parameters
-struct ScalerParams {
-    std::vector<std::string> feature_names;
-    std::vector<float> means;
-    std::vector<float> scales;
-};
-
-// Struct to hold the Y scaler parameters
-struct YScalerParams {
-    float mean;
-    float scale;
-    bool is_log_transformed;
-};
+using namespace Halide;
+using Halide::Derivative;
 
 // A model weight is either just an input, or an input and an output
+// (the updated weights and the ADAM state) depending on whether we're
+// doing inference or training.
 template<bool training>
 struct ModelWeight;
 
@@ -55,69 +42,67 @@ struct ModelWeight<true> : public GeneratorInput<Buffer<float>> {
         : GeneratorInput<Buffer<float>>(name, dim), grad("updated_" + name, dim + 1) {
     }
     void backprop(const Derivative &d, const Expr &learning_rate, const Expr &timestep) {
-        // This is only used in training mode, which we're not supporting
-        // with the custom model
+        std::vector<Expr> args(dimensions() + 1);
+        for (auto &e : args) {
+            e = Var();
+        }
+        grad(args) = undef<float>();
+
+        args.back() = 0;
+        FuncRef new_weight = grad(args);
+        args.back() = 1;
+        FuncRef smoothed_deriv = grad(args);
+        args.back() = 2;
+        FuncRef smoothed_second_moment = grad(args);
+        args.back() = 3;
+        FuncRef loss_gradient = grad(args);
+
+        args.pop_back();
+        Expr current_weight = (*this)(args);
+
+        loss_gradient = d(*this)(args);
+
+        smoothed_deriv = 0.9f * smoothed_deriv + 0.1f * loss_gradient;
+        smoothed_second_moment = 0.999f * smoothed_second_moment + 0.001f * pow(loss_gradient, 2);
+
+        Expr smoothed_deriv_correction = 1 / (1 - pow(0.9f, timestep + 1));
+        Expr smoothed_second_moment_correction = 1 / (1 - pow(0.999f, timestep + 1));
+
+        Expr step = learning_rate * smoothed_deriv * smoothed_deriv_correction;
+        step /= sqrt(smoothed_second_moment * smoothed_second_moment_correction) + 1e-5f;
+
+        new_weight = current_weight - step;
     }
 
     void set_shape(int s0 = 0, int s1 = 0, int s2 = 0) {
         if (s0) {
             dim(0).set_bounds(0, s0);
+            dim(0).set_estimate(0, s0);
             grad.dim(0).set_bounds(0, s0);
+            grad.dim(0).set_estimate(0, s0);
+            grad.bound(grad.args()[0], 0, s0);
+            grad.set_estimate(grad.args()[0], 0, s0);
         }
         if (s1) {
             dim(1).set_bounds(0, s1);
+            dim(1).set_estimate(0, s1);
             grad.dim(1).set_bounds(0, s1);
+            grad.dim(1).set_estimate(0, s1);
+            grad.bound(grad.args()[1], 0, s1);
+            grad.set_estimate(grad.args()[1], 0, s1);
         }
         if (s2) {
             dim(2).set_bounds(0, s2);
+            dim(2).set_estimate(0, s2);
             grad.dim(2).set_bounds(0, s2);
+            grad.dim(2).set_estimate(0, s2);
+            grad.bound(grad.args()[2], 0, s2);
+            grad.set_estimate(grad.args()[2], 0, s2);
         }
         grad.dim(dimensions()).set_bounds(0, 4);
+        grad.dim(dimensions()).set_estimate(0, 4);
     }
 };
-
-// Helper function to load JSON data
-json load_json(const std::string &file_path) {
-    std::ifstream file(file_path);
-    if (!file.is_open()) {
-        throw std::runtime_error("Could not open file: " + file_path);
-    }
-    try {
-        json data;
-        file >> data;
-        return data;
-    } catch (const json::exception &e) {
-        throw std::runtime_error("JSON parsing error in " + file_path + ": " + e.what());
-    }
-}
-
-// Load scaler parameters from JSON file
-ScalerParams load_scaler_params(const std::string &scaler_path) {
-    try {
-        json scaler_data = load_json(scaler_path);
-        ScalerParams params;
-        params.feature_names = scaler_data["feature_names"].get<std::vector<std::string>>();
-        params.means = scaler_data["means"].get<std::vector<float>>();
-        params.scales = scaler_data["scales"].get<std::vector<float>>();
-        return params;
-    } catch (const std::exception &e) {
-        throw std::runtime_error("Failed to load scaler params from " + scaler_path + ": " + e.what());
-    }
-}
-
-// Load Y scaler parameters from JSON file
-YScalerParams load_y_scaler_params(const std::string &scaler_path) {
-    try {
-        json scaler_data = load_json(scaler_path);
-        YScalerParams params;
-        params.mean = scaler_data["mean"].get<float>();
-        params.scale = scaler_data["scale"].get<float>();
-        params.is_log_transformed = scaler_data["is_log_transformed"].get<bool>();
-        return params;
-    } catch (const std::exception &e) {
-        throw std::runtime_error("Failed to load Y scaler params from " + scaler_path + ": " + e.what());
-    }
-}
 
 template<bool training>
 class CostModel : public Generator<CostModel<training>> {
@@ -134,23 +119,12 @@ public:
     using Generator<CostModel<training>>::using_autoscheduler;
     using Generator<CostModel<training>>::get_pipeline;
 
-    // Number of pipeline stages
     Input<int> num_stages{"num_stages", 1};
-
-    // Batch size. Every item in the batch is a different schedule for
-    // the same algorithm.
     Input<int> batch_size{"batch_size", 1};
-
-    // Number of cores on the target machine. Used to reason about idle cores.
     Input<int> num_cores{"num_cores", 1};
-
-    // Algorithm-specific features
     Input<Buffer<float>> pipeline_features{"pipeline_features", 3};
-
-    // Schedule-specific features
     Input<Buffer<float>> schedule_features{"schedule_features", 3};
 
-    // Network weights (kept for compatibility)
     using Weight = ModelWeight<training>;
     Weight head1_filter{"head1_filter", 3};
     Weight head1_bias{"head1_bias", 1};
@@ -158,216 +132,291 @@ public:
     Weight head2_bias{"head2_bias", 1};
     Weight filter1{"filter1", 2};
     Weight bias1{"bias1", 1};
+    Weight fc_weight{"fc_weight", 2};  // New fully connected layer weights
+    Weight fc_bias{"fc_bias", 1};
+    
+    // Batch norm parameters
+    Weight bn1_gamma{"bn1_gamma", 1};
+    Weight bn1_beta{"bn1_beta", 1};
+    Weight bn2_gamma{"bn2_gamma", 1};
+    Weight bn2_beta{"bn2_beta", 1};
 
-    // Some extra inputs for training mode.
     Input<float> learning_rate{"learning_rate", 1.0f};
-    Input<int> timestep{"timestep", 0};  // Needed by ADAM
-
-    // The index of the fastest schedule in the batch. Used as a
-    // reference point for computing relative throughput.
+    Input<int> timestep{"timestep", 0};
     Input<int> reference{"reference", 0};
-
-    // The true runtimes obtained by benchmarking.
     Input<Buffer<float>> true_runtime{"true_runtime", 1};
 
-    // The predicted runtimes
     Output<Buffer<float>> prediction_output{"prediction_output", 1};
-
-    // The loss. L2 on relative throughput.
     Output<Buffer<float>> loss_output{"loss_output", 0};
 
-    // Paths to model and scaler parameters
-    std::string model_path = "/home/kowrisaan/fyp/Halide/src/autoschedulers/adams2019/model.pt";
-    std::string scaler_params_path = "/home/kowrisaan/fyp/Halide/src/autoschedulers/adams2019/scaler_params.json";
-
-    // Loaded model and scaler parameters
-    torch::jit::script::Module pytorch_model;
-    ScalerParams scaler_params;
-    YScalerParams y_scaler_params;
-    
-    void load_pytorch_model() {
-        try {
-            // Load the PyTorch model with explicit CPU mapping
-            pytorch_model = torch::jit::load(model_path, torch::kCPU);
-            pytorch_model.eval();
-            
-            // Load the scaler parameters
-            scaler_params = load_scaler_params(scaler_params_path);
-            
-            // Extract y_scaler parameters from the same file or load from a separate file
-            y_scaler_params = load_y_scaler_params(scaler_params_path);
-        } catch (const std::exception &e) {
-            std::cerr << "Error loading model or parameters: " << e.what() << std::endl;
-            exit(1);
-        }
+    Func pad_stages(const Func &f, const Expr &stages) {
+        Halide::Region bounds(f.dimensions());
+        bounds[1].min = 0;
+        bounds[1].extent = stages;
+        return BoundaryConditions::constant_exterior(f, cast(f.value().type(), 0), bounds);
     }
 
-    // Helper function to extract features from schedule data
-    std::map<std::string, float> extract_features(const Func &runtime_per_stage, int n) {
-        std::map<std::string, float> features;
-        
-        // Unpack all of the schedule features as in the original code
-        int idx = 0;
-        Expr num_realizations = schedule_features(n, idx++, 0);
-        Expr num_productions = schedule_features(n, idx++, 0);
-        Expr points_computed_per_realization = schedule_features(n, idx++, 0);
-        Expr points_computed_per_production = schedule_features(n, idx++, 0);
-        Expr points_computed_total = schedule_features(n, idx++, 0);
-        Expr points_computed_minimum = schedule_features(n, idx++, 0);
-        Expr innermost_loop_extent = schedule_features(n, idx++, 0);
-        Expr innermost_pure_loop_extent = schedule_features(n, idx++, 0);
-        Expr unrolled_loop_extent = schedule_features(n, idx++, 0);
-        Expr inner_parallelism = schedule_features(n, idx++, 0);
-        Expr outer_parallelism = schedule_features(n, idx++, 0);
-        Expr bytes_at_realization = schedule_features(n, idx++, 0);
-        Expr bytes_at_production = schedule_features(n, idx++, 0);
-        Expr bytes_at_root = schedule_features(n, idx++, 0);
-        Expr innermost_bytes_at_realization = schedule_features(n, idx++, 0);
-        Expr innermost_bytes_at_production = schedule_features(n, idx++, 0);
-        Expr innermost_bytes_at_root = schedule_features(n, idx++, 0);
-        Expr inlined_calls = schedule_features(n, idx++, 0);
-        Expr unique_bytes_read_per_realization = schedule_features(n, idx++, 0);
-        Expr unique_lines_read_per_realization = schedule_features(n, idx++, 0);
-        Expr allocation_bytes_read_per_realization = schedule_features(n, idx++, 0);
-        Expr working_set = schedule_features(n, idx++, 0);
-        Expr vector_size = schedule_features(n, idx++, 0);
-        Expr native_vector_size = schedule_features(n, idx++, 0);
-        Expr num_vectors = schedule_features(n, idx++, 0);
-        Expr num_scalars = schedule_features(n, idx++, 0);
-        Expr scalar_loads_per_vector = schedule_features(n, idx++, 0);
-        Expr vector_loads_per_vector = schedule_features(n, idx++, 0);
-        Expr scalar_loads_per_scalar = schedule_features(n, idx++, 0);
-        Expr bytes_at_task = schedule_features(n, idx++, 0);
-        Expr innermost_bytes_at_task = schedule_features(n, idx++, 0);
-        Expr unique_bytes_read_per_vector = schedule_features(n, idx++, 0);
-        Expr unique_lines_read_per_vector = schedule_features(n, idx++, 0);
-        Expr unique_bytes_read_per_task = schedule_features(n, idx++, 0);
-        Expr unique_lines_read_per_task = schedule_features(n, idx++, 0);
-        Expr working_set_at_task = schedule_features(n, idx++, 0);
-        Expr working_set_at_production = schedule_features(n, idx++, 0);
-        Expr working_set_at_realization = schedule_features(n, idx++, 0);
-        Expr working_set_at_root = schedule_features(n, idx++, 0);
-        
-        // Map features to the expected format for the custom model
-        features["num_realizations"] = num_realizations;
-        features["num_productions"] = num_productions;
-        features["points_computed_per_realization"] = points_computed_per_realization;
-        features["points_computed_per_production"] = points_computed_per_production;
-        features["points_computed_total"] = points_computed_total;
-        features["inner_parallelism"] = inner_parallelism;
-        features["outer_parallelism"] = outer_parallelism;
-        features["bytes_at_realization"] = bytes_at_realization;
-        features["bytes_at_production"] = bytes_at_production;
-        features["bytes_at_root"] = bytes_at_root;
-        features["working_set"] = working_set;
-        features["num_vectors"] = num_vectors;
-        features["num_scalars"] = num_scalars;
-        features["bytes_at_task"] = bytes_at_task;
-        
-        // Add derived features that might be needed by your model
-        features["memory_pressure"] = select(bytes_at_production > 0, 
-                                    working_set / bytes_at_production, 
-                                    0.0f);
-        features["bytes_per_vector"] = select(num_vectors > 0,
-                                     bytes_at_production / num_vectors,
-                                     0.0f);
-        features["total_parallelism"] = inner_parallelism * outer_parallelism;
-        
-        return features;
+    Expr leaky_relu(const Expr &e) {
+        return select(e > 0, e, 0.01f * e);
     }
 
-    // Prepare input tensor using scaler parameters
-    torch::Tensor prepare_input_tensor(const std::map<std::string, float> &features) {
-        std::vector<float> feature_vector(scaler_params.feature_names.size(), 0.0f);
+    Expr sigmoid(const Expr &e) {
+        return 1 / (1 + exp(-e));
+    }
+
+    Func batch_norm(const Func &input, const Weight &gamma, const Weight &beta, const std::string &name, Var c, Var w, Var n) {
+        Func bn{name};
+        RDom r(0, input.args()[0].extent());
         
-        // Populate feature vector based on feature names in the scaler params
-        for (size_t i = 0; i < scaler_params.feature_names.size(); ++i) {
-            const std::string &key = scaler_params.feature_names[i];
-            if (features.count(key)) {
-                feature_vector[i] = features.at(key);
-            } else {
-                feature_vector[i] = 0.0f; // Default to zero for missing features
-            }
+        Expr mean = sum(input(r, w, n)) / input.args()[0].extent();
+        Expr variance = sum(pow(input(r, w, n) - mean, 2)) / input.args()[0].extent();
+        
+        bn(c, w, n) = gamma(c) * (input(c, w, n) - mean) / sqrt(variance + 1e-5f) + beta(c);
+        return bn;
+    }
+
+    Func dropout(const Func &input, float rate, Var c, Var w, Var n) {
+        if (!training) {
+            return input;
         }
         
-        // Scale the feature vector
-        torch::Tensor x = torch::tensor(feature_vector, torch::kFloat32);
-        torch::Tensor means = torch::tensor(scaler_params.means, torch::kFloat32);
-        torch::Tensor scales = torch::tensor(scaler_params.scales, torch::kFloat32);
-        scales = torch::where(scales == 0, torch::ones_like(scales), scales); // Avoid division by zero
-        x = (x - means) / scales;
-        
-        // Reshape according to your model's expected input shape (e.g., [1, 1, feature_dim] for LSTM)
-        torch::Tensor input_tensor = x.reshape({1, 1, -1});
-        
-        return input_tensor;
-    }
-
-    // Run prediction with the PyTorch model
-    float run_prediction(const torch::Tensor &input_tensor) {
-        torch::NoGradGuard no_grad;
-        
-        // Ensure model is in evaluation mode
-        pytorch_model.eval();
-        
-        // Move input to CPU (ensure we're not using CUDA)
-        torch::Tensor input = input_tensor.to(torch::kCPU);
-        
-        std::vector<torch::jit::IValue> inputs = {input};
-        auto output = pytorch_model.forward(inputs).toTensor();
-        
-        float prediction = output.item<float>();
-        return prediction;
-    }
-
-    // Apply inverse transformation to the model output
-    float inverse_transform_prediction(float scaled_prediction) {
-        float unscaled = scaled_prediction * y_scaler_params.scale + y_scaler_params.mean;
-        float result = y_scaler_params.is_log_transformed ? std::exp(unscaled) - 1 : unscaled;
-        return result;
+        Func drop{"dropout"};
+        Expr mask = random_float(0) < rate ? 0.0f : 1.0f / (1.0f - rate);
+        drop(c, w, n) = input(c, w, n) * mask;
+        return drop;
     }
 
     void generate() {
-        // Load the PyTorch model and scaler parameters at generation time
-        if (!training) {
-            load_pytorch_model();
-        }
-        
-        Var n("n"), w("w");
-        
-        // Define a function to compute the runtime prediction for each stage
-        Func runtime_per_stage("runtime_per_stage");
-        
-        if (!training) {
-            // In inference mode, use our custom PyTorch model
-            runtime_per_stage(n, w) = 0.0f;  // Initialize
-            
-            // Since we can't directly use the PyTorch model in Halide code,
-            // we'll use a placeholder here and implement the actual prediction logic
-            // in a separate step that executes during the Halide runtime
-            
-            // For now, we'll use a simple placeholder that captures the necessary information
-            // for the actual prediction to happen at runtime
-            runtime_per_stage(n, w) = schedule_features(n, 0, w) * 0.0f;  // Dummy calculation
-            
-            // Sum across the stages to get the total runtime
-            Func prediction;
-            RDom r_reduce(0, num_stages);
-            prediction(n) += runtime_per_stage(n, r_reduce);
-            
-            prediction_output(n) = prediction(n);
-            loss_output() = 0.0f;
-        } else {
-            // In training mode, we don't support the custom model
-            // This is just a placeholder implementation
-            runtime_per_stage(n, w) = 0.0f;
-            Func prediction;
-            prediction(n) = 0.0f;
-            prediction_output(n) = prediction(n);
-            loss_output() = 0.0f;
+        Var c("c"), w("w"), n("n"), j("j"), s("s");
+
+        Func normalized_schedule_features("normalized_schedule_features");
+        normalized_schedule_features(n, c, s) = fast_log(schedule_features(n, c, s) + 1);
+
+        Func squashed_head1_filter("squashed_head1_filter");
+        squashed_head1_filter(c, s, n) = sigmoid(head1_filter(c, s, n));
+
+        Func squashed_head1_filter_broadcast("squashed_head1_filter_broadcast");
+        squashed_head1_filter_broadcast(c, w, s, n) = squashed_head1_filter(c, s, n);
+
+        Func head1_conv("head1_conv");
+        RDom r_head1(0, head1_w, 0, head1_h);
+        head1_conv(c, w) = head1_bias(c);
+        head1_conv(c, w) += (squashed_head1_filter_broadcast(c, w, r_head1.x, r_head1.y) *
+                            pipeline_features(r_head1.x, r_head1.y, w));
+
+        Func head1_bn = batch_norm(head1_conv, bn1_gamma, bn1_beta, "head1_bn", c, w, n);
+
+        Func head2_conv("head2_conv");
+        RDom r_head2(0, head2_w);
+        head2_conv(c, w, n) = head2_bias(c);
+        head2_conv(c, w, n) += head2_filter(c, r_head2) * normalized_schedule_features(n, r_head2, w);
+
+        Func head2_bn = batch_norm(head2_conv, bn2_gamma, bn2_beta, "head2_bn", c, w, n);
+        Func head2_leaky_relu("head2_leaky_relu");
+        head2_leaky_relu(c, w, n) = leaky_relu(head2_bn(c, w, n));
+
+        Func head2_dropout = dropout(head2_leaky_relu, 0.3f, c, w, n);
+
+        Func conv1_stage1("conv1_stage1");
+        RDom r1_stage1(0, head1_channels);
+        conv1_stage1(c, w) = bias1(c);
+        conv1_stage1(c, w) += filter1(c, r1_stage1.x) * head1_bn(r1_stage1.x, w);
+
+        Func conv1_stage2("conv1_stage2");
+        RDom r1_stage2(0, head2_channels);
+        conv1_stage2(c, w, n) = conv1_stage1(c, w);
+        conv1_stage2(c, w, n) += filter1(c, head1_filter.dim(0).extent() + r1_stage2.x) * head2_dropout(r1_stage2.x, w, n);
+
+        Func conv1_leaky_relu("conv1_leaky_relu");
+        conv1_leaky_relu(c, w, n) = leaky_relu(conv1_stage2(c, w, n));
+
+        // New fully connected layer
+        Func fc_layer("fc_layer");
+        RDom r_fc(0, conv1_channels);
+        fc_layer(w, n) = fc_bias(0);
+        fc_layer(w, n) += fc_weight(r_fc.x, 0) * conv1_leaky_relu(r_fc.x, w, n);
+
+        Func fc_leaky_relu("fc_leaky_relu");
+        fc_leaky_relu(w, n) = leaky_relu(fc_layer(w, n));
+
+        Func relu1("relu1");
+        relu1(c, w, n) = leaky_relu(fc_leaky_relu(w, n));
+
+        int idx = 0;
+        Expr num_realizations = schedule_features(n, idx++, w);
+        Expr num_productions = schedule_features(n, idx++, w);
+        Expr points_computed_per_realization = schedule_features(n, idx++, w);
+        Expr points_computed_per_production = schedule_features(n, idx++, w);
+        Expr points_computed_total = schedule_features(n, idx++, w);
+        Expr points_computed_minimum = schedule_features(n, idx++, w);
+        Expr innermost_loop_extent = schedule_features(n, idx++, w);
+        Expr innermost_pure_loop_extent = schedule_features(n, idx++, w);
+        Expr unrolled_loop_extent = schedule_features(n, idx++, w);
+        Expr inner_parallelism = schedule_features(n, idx++, w);
+        Expr outer_parallelism = schedule_features(n, idx++, w);
+        Expr bytes_at_realization = schedule_features(n, idx++, w);
+        Expr bytes_at_production = schedule_features(n, idx++, w);
+        Expr bytes_at_root = schedule_features(n, idx++, w);
+        Expr innermost_bytes_at_realization = schedule_features(n, idx++, w);
+        Expr innermost_bytes_at_production = schedule_features(n, idx++, w);
+        Expr innermost_bytes_at_root = schedule_features(n, idx++, w);
+        Expr inlined_calls = schedule_features(n, idx++, w);
+        Expr unique_bytes_read_per_realization = schedule_features(n, idx++, w);
+        Expr unique_lines_read_per_realization = schedule_features(n, idx++, w);
+        Expr allocation_bytes_read_per_realization = schedule_features(n, idx++, w);
+        Expr working_set = schedule_features(n, idx++, w);
+        Expr vector_size = schedule_features(n, idx++, w);
+        Expr native_vector_size = schedule_features(n, idx++, w);
+        Expr num_vectors = schedule_features(n, idx++, w);
+        Expr num_scalars = schedule_features(n, idx++, w);
+        Expr scalar_loads_per_vector = schedule_features(n, idx++, w);
+        Expr vector_loads_per_vector = schedule_features(n, idx++, w);
+        Expr scalar_loads_per_scalar = schedule_features(n, idx++, w);
+        Expr bytes_at_task = schedule_features(n, idx++, w);
+        Expr innermost_bytes_at_task = schedule_features(n, idx++, w);
+        Expr unique_bytes_read_per_vector = schedule_features(n, idx++, w);
+        Expr unique_lines_read_per_vector = schedule_features(n, idx++, w);
+        Expr unique_bytes_read_per_task = schedule_features(n, idx++, w);
+        Expr unique_lines_read_per_task = schedule_features(n, idx++, w);
+        Expr working_set_at_task = schedule_features(n, idx++, w);
+        Expr working_set_at_production = schedule_features(n, idx++, w);
+        Expr working_set_at_realization = schedule_features(n, idx++, w);
+        Expr working_set_at_root = schedule_features(n, idx++, w);
+        assert(idx == head2_w);
+
+        Expr compute_cost = select(inlined_calls == 0,
+                                 (vector_size * num_vectors * relu1(0, w, n) +
+                                  num_scalars * relu1(1, w, n)),
+                                 (vector_size * num_vectors * relu1(2, w, n) +
+                                  num_scalars * relu1(3, w, n)));
+
+        Expr num_tasks = max(1, inner_parallelism * outer_parallelism);
+        Expr tasks_per_core = num_tasks / num_cores;
+        Expr idle_core_wastage = ceil(tasks_per_core) / max(1, tasks_per_core);
+        compute_cost *= idle_core_wastage;
+
+        Expr load_cost = (num_realizations * unique_lines_read_per_realization * relu1(5, w, n) +
+                         num_realizations * unique_bytes_read_per_realization * relu1(6, w, n) +
+                         num_vectors * scalar_loads_per_vector * relu1(7, w, n) +
+                         num_scalars * scalar_loads_per_scalar * relu1(8, w, n) +
+                         num_vectors * vector_loads_per_vector * relu1(9, w, n) +
+                         num_scalars * unique_bytes_read_per_vector * relu1(10, w, n) +
+                         num_vectors * unique_bytes_read_per_vector * relu1(11, w, n) +
+                         num_scalars * unique_lines_read_per_vector * relu1(12, w, n) +
+                         num_vectors * unique_lines_read_per_vector * relu1(13, w, n) +
+                         num_tasks * unique_bytes_read_per_task * relu1(14, w, n) +
+                         num_tasks * unique_lines_read_per_task * relu1(15, w, n));
+
+        Expr lines_written_per_realization = inner_parallelism * (bytes_at_task / max(1, innermost_bytes_at_task));
+
+        Expr alpha = select(inner_parallelism > 1, relu1(16, w, n),
+                          w == 0, relu1(17, w, n),
+                          relu1(18, w, n));
+        Expr beta = select(inner_parallelism > 1, relu1(19, w, n),
+                         w == 0, relu1(20, w, n),
+                         relu1(21, w, n));
+
+        Expr store_cost = num_realizations * (lines_written_per_realization * alpha +
+                                            bytes_at_realization * beta);
+
+        Expr cost_of_false_sharing =
+            select(inner_parallelism > 1,
+                  relu1(22, w, n) * (num_vectors + num_scalars) / max(1, innermost_bytes_at_task),
+                  0.0f);
+
+        store_cost += cost_of_false_sharing;
+
+        Expr max_threads_hitting_same_page_fault = min(inner_parallelism, 4096 / max(1, innermost_bytes_at_task));
+        const Expr &num_page_faults = bytes_at_production;
+
+        Expr cost_of_page_faults = (num_page_faults * max_threads_hitting_same_page_fault *
+                                  inner_parallelism * outer_parallelism * relu1(23, w, n));
+
+        store_cost += cost_of_page_faults;
+
+        Expr cost_of_malloc = relu1(24, w, n) * num_realizations;
+
+        Expr cost_of_parallel_launches = num_productions * select(inner_parallelism > 1, relu1(25, w, n), 0.0f);
+
+        Expr cost_of_parallel_tasks = num_productions * (inner_parallelism - 1) * relu1(26, w, n);
+
+        Expr cost_of_parallelism = cost_of_parallel_tasks + cost_of_parallel_launches;
+
+        Expr cost_of_working_set = working_set * relu1(27, w, n);
+
+        store_cost *= 2;
+
+        Expr cost = (compute_cost +
+                    store_cost +
+                    load_cost +
+                    cost_of_malloc +
+                    cost_of_parallelism +
+                    cost_of_working_set);
+
+        for (int i = 0; i < 32; i++) {
+            cost += 0.0f * relu1(i, w, n);
         }
 
-        // Set up estimates for autoscheduling this pipeline
+        Func runtime_per_stage;
+        runtime_per_stage(n, w) = cost * 1e-9f;
+
+        Func prediction;
+        RDom r Reduce(0, num_stages);
+        prediction(n) += runtime_per_stage(n, r_reduce);
+
+        prediction_output(n) = prediction(n);
+
+        Func err;
+
+        if (!training) {
+            loss_output() = 0.0f;
+        } else {
+            RDom r_batch(0, batch_size);
+
+            RDom r_conv1_output(0, conv1_channels, 0, num_stages);
+            Expr regularize = sum(-min(fc_layer(r_conv1_output.y, n), 0));
+
+            Expr n2 = clamp(reference, 0, batch_size - 1);
+            Expr scale = 1.0f / true_runtime(n2);
+
+            Expr p1 = prediction(n) * scale;
+            Expr r1 = true_runtime(n) * scale;
+
+            Expr delta = pow(1.0f / max(p1, 1e-10f) - 1.0f / r1, 2);
+
+            err(n) = delta + 1e-5f * regularize;
+
+            Expr loss = sum(err(r_batch));
+
+            loss_output() = loss;
+
+            Derivative d_loss_d = propagate_adjoints(loss_output);
+
+            Weight *weights[] = {&head1_filter, &head1_bias,
+                               &head2_filter, &head2_bias,
+                               &filter1, &bias1,
+                               &fc_weight, &fc_bias,
+                               &bn1_gamma, &bn1_beta,
+                               &bn2_gamma, &bn2_beta};
+
+            for (Weight *w : weights) {
+                w->backprop(d_loss_d, learning_rate, timestep);
+            }
+        }
+
+        head1_filter.set_shape(head1_channels, head1_w, head1_h);
+        head1_bias.set_shape(head1_channels);
+        head2_filter.set_shape(head2_channels, head2_w);
+        head2_bias.set_shape(head2_channels);
+        filter1.set_shape(conv1_channels, head1_channels + head2_channels);
+        bias1.set_shape(conv1_channels);
+        fc_weight.set_shape(conv1_channels, 1);
+        fc_bias.set_shape(1);
+        bn1_gamma.set_shape(head1_channels);
+        bn1_beta.set_shape(head1_channels);
+        bn2_gamma.set_shape(head2_channels);
+        bn2_beta.set_shape(head2_channels);
+
         num_cores.set_estimate(32);
         reference.set_estimate(0);
         batch_size.set_estimate(80);
@@ -376,35 +425,89 @@ public:
         learning_rate.set_estimate(0.001f);
         timestep.set_estimate(37);
         pipeline_features.set_estimates({{0, head1_w}, {0, head1_h}, {0, 13}});
-        // Fix the dimension mismatch in schedule_features estimates
-        schedule_features.set_estimates({{0, head2_w}, {0, head2_h}, {0, 13}});
+        schedule_features.set_estimates({{0, 80}, {0, head2_w}, {0, 13}});
         true_runtime.set_estimates({{0, 80}});
 
-        // All the model weight shapes are statically known
-        head1_filter.set_shape(head1_channels, head1_w, head1_h);
-        head1_bias.set_shape(head1_channels);
-        head2_filter.set_shape(head2_channels, head2_w);
-        head2_bias.set_shape(head2_channels);
-        filter1.set_shape(conv1_channels, head1_channels + head2_channels);
-        bias1.set_shape(conv1_channels);
-
-        // SCHEDULE
-        if (using_autoscheduler()) {
-            // Do nothing
+        if (training && !using_autoscheduler()) {
+            do_cost_model_schedule(get_pipeline());
+        } else if (using_autoscheduler()) {
+            // Do nothing.
         } else {
-            // Simple schedule for inference
             Var no;
             prediction_output.specialize(batch_size < 8).split(n, no, n, 1);
             prediction_output.compute_root().split(n, no, n, 8).parallel(no);
             prediction_output.bound(n, 0, batch_size);
-            
-            // In the actual implementation, we would implement the model prediction
-            // as an ExternalCode node that calls into the PyTorch runtime
+
+            const int vec = 8;
+
+            auto schedule_conv = [&](Func conv, Func bn, Func relu, const RVar &r_channels) {
+                Var ci, wi;
+                if (!training) {
+                    relu
+                        .compute_at(prediction_output, n)
+                        .store_at(prediction_output, no)
+                        .tile(c, w, ci, wi, vec, 4, TailStrategy::RoundUp)
+                        .vectorize(ci);
+                    bn
+                        .compute_at(relu, c)
+                        .vectorize(c);
+                    conv.compute_at(bn, c);
+                } else {
+                    conv.in()
+                        .compute_root()
+                        .tile(c, w, ci, wi, vec, 1, TailStrategy::RoundUp)
+                        .vectorize(ci)
+                        .unroll(wi)
+                        .parallel(n, 8);
+                    conv.compute_at(conv.in(), c);
+                    bn
+                        .compute_root()
+                        .vectorize(c)
+                        .parallel(n, 8);
+                    relu
+                        .compute_root()
+                        .reorder_storage(c, w, n)
+                        .reorder(c, w, n)
+                        .vectorize(c, vec)
+                        .parallel(n, 8);
+                }
+                conv
+                    .vectorize(c)
+                    .unroll(w)
+                    .update()
+                    .vectorize(c)
+                    .unroll(w)
+                    .reorder(c, w, r_channels);
+            };
+
+            conv1_stage1.compute_root().vectorize(c).update().vectorize(c);
+            squashed_head1_filter.compute_root().vectorize(c);
+
+            if (!training) {
+                normalized_schedule_features
+                    .compute_at(prediction_output, no)
+                    .vectorize(n);
+            } else {
+                normalized_schedule_features
+                    .compute_root()
+                    .vectorize(n, 8);
+            }
+
+            schedule_conv(head2_conv, head2_bn, head2_leaky_relu, r_head2.x);
+            schedule_conv(conv1_stage2, conv1_leaky_relu, relu1, r1_stage2.x);
+
+            fc_layer
+                .compute_root()
+                .vectorize(w)
+                .parallel(n, 8);
+            fc_leaky_relu
+                .compute_root()
+                .vectorize(w)
+                .parallel(n, 8);
         }
     }
 };
 
-// Maintain compatibility with existing code
 using CostModelInference = CostModel<false>;
 using CostModelTraining = CostModel<true>;
 
