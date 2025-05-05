@@ -49,30 +49,22 @@ struct ModelWeight<false> : public GeneratorInput<Buffer<float>> {
 
 template<>
 struct ModelWeight<true> : public GeneratorInput<Buffer<float>> {
-    GeneratorOutput<Buffer<float>> grad;
-
     ModelWeight(const std::string &name, int dim)
-        : GeneratorInput<Buffer<float>>(name, dim), grad("updated_" + name, dim + 1) {
+        : GeneratorInput<Buffer<float>>(name, dim) {
     }
     void backprop(const Derivative &d, const Expr &learning_rate, const Expr &step) {
-        // This is only used in training mode, which we're not supporting
-        // with the custom model
+        // Training mode is not supported with the custom model
     }
-
     void set_shape(int s0 = 0, int s1 = 0, int s2 = 0) {
         if (s0) {
             dim(0).set_bounds(0, s0);
-            grad.dim(0).set_bounds(0, s0);
         }
         if (s1) {
             dim(1).set_bounds(0, s1);
-            grad.dim(1).set_bounds(0, s1);
         }
         if (s2) {
             dim(2).set_bounds(0, s2);
-            grad.dim(2).set_bounds(0, s2);
         }
-        grad.dim(dimensions()).set_bounds(0, 4);
     }
 };
 
@@ -96,9 +88,27 @@ ScalerParams load_scaler_params(const std::string &scaler_path) {
     try {
         json scaler_data = load_json(scaler_path);
         ScalerParams params;
+
+        // Validate required fields
+        if (!scaler_data.contains("feature_names") || scaler_data["feature_names"].is_null()) {
+            throw std::runtime_error("Missing or null 'feature_names' in " + scaler_path);
+        }
+        if (!scaler_data.contains("means") || scaler_data["means"].is_null()) {
+            throw std::runtime_error("Missing or null 'means' in " + scaler_path);
+        }
+        if (!scaler_data.contains("scales") || scaler_data["scales"].is_null()) {
+            throw std::runtime_error("Missing or null 'scales' in " + scaler_path);
+        }
+
         params.feature_names = scaler_data["feature_names"].get<std::vector<std::string>>();
         params.means = scaler_data["means"].get<std::vector<float>>();
         params.scales = scaler_data["scales"].get<std::vector<float>>();
+
+        // Validate that arrays have consistent sizes
+        if (params.feature_names.size() != params.means.size() || params.feature_names.size() != params.scales.size()) {
+            throw std::runtime_error("Inconsistent sizes for feature_names, means, and scales in " + scaler_path);
+        }
+
         return params;
     } catch (const std::exception &e) {
         throw std::runtime_error("Failed to load scaler params from " + scaler_path + ": " + e.what());
@@ -110,14 +120,27 @@ YScalerParams load_y_scaler_params(const std::string &scaler_path) {
     try {
         json scaler_data = load_json(scaler_path);
         YScalerParams params;
+
+        // Validate required fields
+        if (!scaler_data.contains("mean") || scaler_data["mean"].is_null()) {
+            throw std::runtime_error("Missing or null 'mean' in " + scaler_path);
+        }
+        if (!scaler_data.contains("scale") || scaler_data["scale"].is_null()) {
+            throw std::runtime_error("Missing or null 'scale' in " + scaler_path);
+        }
+        if (!scaler_data.contains("is_log_transformed") || scaler_data["is_log_transformed"].is_null()) {
+            throw std::runtime_error("Missing or null 'is_log_transformed' in " + scaler_path);
+        }
+
         params.mean = scaler_data["mean"].get<float>();
         params.scale = scaler_data["scale"].get<float>();
         params.is_log_transformed = scaler_data["is_log_transformed"].get<bool>();
+
         return params;
     } catch (const std::exception &e) {
         throw std::runtime_error("Failed to load Y scaler params from " + scaler_path + ": " + e.what());
     }
-}
+ /
 
 template<bool training>
 class CostModel : public Generator<CostModel<training>> {
@@ -352,7 +375,7 @@ public:
             
             // Sum across the stages to get the total runtime
             Func prediction;
-            RDom r_reduce(0, num_stages);
+            RDom r Reduce(0, num_stages);
             prediction(n) += runtime_per_stage(n, r_reduce);
             
             prediction_output(n) = prediction(n);
@@ -376,7 +399,6 @@ public:
         learning_rate.set_estimate(0.001f);
         timestep.set_estimate(37);
         pipeline_features.set_estimates({{0, head1_w}, {0, head1_h}, {0, 13}});
-        // Fix the dimension mismatch in schedule_features estimates
         schedule_features.set_estimates({{0, head2_w}, {0, head2_channels}, {0, 13}});
         true_runtime.set_estimates({{0, 80}});
 
