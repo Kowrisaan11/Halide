@@ -9,7 +9,7 @@
 #include <cmath>
 #include <limits>
 
-#include "adams2019_train_cost_model.h"
+#include "adams2019_cost_model.h"
 
 namespace Halide {
 
