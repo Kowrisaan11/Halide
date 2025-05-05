@@ -32,7 +32,7 @@ struct ModelWeight<false> : public GeneratorInput<Buffer<float>> {
     ModelWeight(const std::string &name, int dim)
         : GeneratorInput<Buffer<float>>(name, dim) {
     }
-    void backprop(const Derivative &d, const Expr &learning_rate, const Expr &timestep) {
+    void backprop(const Derivative &d, const Expr &learning_rate, const Expr &step) {
     }
     void set_shape(int s0 = 0, int s1 = 0, int s2 = 0) {
         if (s0) {
@@ -54,7 +54,7 @@ struct ModelWeight<true> : public GeneratorInput<Buffer<float>> {
     ModelWeight(const std::string &name, int dim)
         : GeneratorInput<Buffer<float>>(name, dim), grad("updated_" + name, dim + 1) {
     }
-    void backprop(const Derivative &d, const Expr &learning_rate, const Expr &timestep) {
+    void backprop(const Derivative &d, const Expr &learning_rate, const Expr &step) {
         // This is only used in training mode, which we're not supporting
         // with the custom model
     }
@@ -372,21 +372,13 @@ public:
         reference.set_estimate(0);
         batch_size.set_estimate(80);
         num_stages.set_estimate(13);
-        prediction_output.set_estimate(0, 80);
+        prediction_output.set_estimates({{0, 80}});
         learning_rate.set_estimate(0.001f);
         timestep.set_estimate(37);
-        
-        // Set estimates for pipeline_features using proper bounds
-        pipeline_features.dim(0).set_bounds_estimate(0, head1_w);
-        pipeline_features.dim(1).set_bounds_estimate(0, head1_h);
-        pipeline_features.dim(2).set_bounds_estimate(0, 13);
-        
-        // Set estimates for schedule_features using proper bounds
-        schedule_features.dim(0).set_bounds_estimate(0, head2_w);
-        schedule_features.dim(1).set_bounds_estimate(0, head2_h);
-        schedule_features.dim(2).set_bounds_estimate(0, 13);
-        
-        true_runtime.set_estimate(0, 80);
+        pipeline_features.set_estimates({{0, head1_w}, {0, head1_h}, {0, 13}});
+        // Fix the dimension mismatch in schedule_features estimates
+        schedule_features.set_estimates({{0, head2_w}, {0, head2_channels}, {0, 13}});
+        true_runtime.set_estimates({{0, 80}});
 
         // All the model weight shapes are statically known
         head1_filter.set_shape(head1_channels, head1_w, head1_h);
