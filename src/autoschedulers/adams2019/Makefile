@@ -23,7 +23,7 @@ TORCH_INCLUDE = $(TORCH_ROOT)/include
 TORCH_LIB = $(TORCH_ROOT)/lib
 TORCH_LIBS = -ltorch -ltorch_cpu -lc10
 CXXFLAGS += -I$(TORCH_INCLUDE)
-LDFLAGS += -L$(TORCH_LIB) $(TORCH_LIBS)
+LDFLAGS += -L$(TORCH_LIB) $(TORCH_LIBS) -Wl,-rpath,$(TORCH_LIB)
 
 # nlohmann/json settings
 JSON_INCLUDE = /usr/include
@@ -46,6 +46,7 @@ $(TARGET): $(OBJECTS)
 	@mkdir -p bin
 	$(CXX) -shared -rdynamic $(OBJECTS) -o $@ $(LDFLAGS) -Wl,-rpath,'$$ORIGIN'
 
+# Explicit rules for object files
 AutoSchedule.o: AutoSchedule.cpp
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
