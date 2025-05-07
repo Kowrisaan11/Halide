@@ -44,16 +44,19 @@ json load_json(const std::string &file_path) {
 }  // namespace
 
 // Load scaler parameters for input features
-ScalerParams DefaultCostModel::load_scaler_params(const std::string &scaler_path) {
+ScalerParams DefaultCostModel::load_scaler_x_params(const nlohmann::json &scaler_data) {
     try {
-        json scaler_data = load_json(scaler_path);
+        if (!scaler_data.contains("scaler_X")) {
+            throw std::runtime_error("Missing 'scaler_X' in scaler_params.json");
+        }
+        auto scaler_x_data = scaler_data["scaler_X"];
         ScalerParams params;
-        params.feature_names = scaler_data["feature_names"].get<std::vector<std::string>>();
-        params.means = scaler_data["means"].get<std::vector<float>>();
-        params.scales = scaler_data["scales"].get<std::vector<float>>();
+        params.feature_names = scaler_x_data["feature_names"].get<std::vector<std::string>>();
+        params.means = scaler_x_data["means"].get<std::vector<float>>();
+        params.scales = scaler_x_data["scales"].get<std::vector<float>>();
         if (params.feature_names.size() != params.means.size() ||
             params.means.size() != params.scales.size()) {
-            throw std::runtime_error("Scaler X dimensions mismatch in " + scaler_path);
+            throw std::runtime_error("Scaler X dimensions mismatch in scaler_params.json");
         }
         aslog(1) << "Scaler X loaded with " << params.feature_names.size() << " features:\n";
         for (size_t i = 0; i < params.feature_names.size(); ++i) {
@@ -63,28 +66,31 @@ ScalerParams DefaultCostModel::load_scaler_params(const std::string &scaler_path
         }
         return params;
     } catch (const std::exception &e) {
-        throw std::runtime_error("Failed to load scaler params from " + scaler_path + ": " + e.what());
+        throw std::runtime_error("Failed to load scaler_X params: " + std::string(e.what()));
     }
 }
 
 // Load scaler parameters for output
-YScalerParams DefaultCostModel::load_scaler_params(const std::string &scaler_path) {
+YScalerParams DefaultCostModel::load_scaler_y_params(const nlohmann::json &scaler_data) {
     try {
-        json scaler_data = load_json(scaler_path);
+        if (!scaler_data.contains("scaler_y")) {
+            throw std::runtime_error("Missing 'scaler_y' in scaler_params.json");
+        }
+        auto scaler_y_data = scaler_data["scaler_y"];
         YScalerParams params;
-        params.mean = scaler_data["mean"].get<float>();
-        params.scale = scaler_data["scale"].get<float>();
-        params.is_log_transformed = scaler_data["is_log_transformed"].get<bool>();
+        params.mean = scaler_y_data["mean"].get<float>();
+        params.scale = scaler_y_data["scale"].get<float>();
+        params.is_log_transformed = scaler_y_data["is_log_transformed"].get<bool>();
         aslog(1) << "Scaler Y loaded: mean=" << params.mean
                  << ", scale=" << params.scale
                  << ", is_log_transformed=" << params.is_log_transformed << "\n";
         return params;
     } catch (const std::exception &e) {
-        throw std::runtime_error("Failed to load Y scaler params from " + scaler_path + ": " + e.what());
+        throw std::runtime_error("Failed to load scaler_y params: " + std::string(e.what()));
     }
 }
 
-// Extract features from JSON IR (adapted from main.cpp)
+// Extract features from JSON IR
 std::map<std::string, float> DefaultCostModel::extract_features(const json &data) {
     std::map<std::string, float> features;
 
@@ -163,7 +169,7 @@ std::map<std::string, float> DefaultCostModel::extract_features(const json &data
     }
     features.insert(op_counts.begin(), op_counts.end());
 
-    // Scheduling features (use first entry, as in main.cpp)
+    // Scheduling features (use first entry)
     if (!sched_features.empty()) {
         std::vector<std::string> important_metrics = {
             "bytes_at_production", "bytes_at_realization", "bytes_at_root", "bytes_at_task",
@@ -303,8 +309,13 @@ void DefaultCostModel::load_weights() {
         throw std::runtime_error("Failed to load PyTorch model: " + std::string(e.what()));
     }
 
-    scaler_X = load_scaler_params(scaler_x_path);
-    scaler_y = load_scaler_params(scaler_y_path);
+    try {
+        json scaler_data = load_json(scaler_params_path);
+        scaler_X = load_scaler_x_params(scaler_data);
+        scaler_y = load_scaler_y_params(scaler_data);
+    } catch (const std::exception &e) {
+        throw std::runtime_error("Failed to load scaler params: " + std::string(e.what()));
+    }
 }
 
 // Save model (optional)
@@ -428,12 +439,12 @@ void DefaultCostModel::reset() {
 }
 
 // Factory function
-std::unique_ptr<DefaultCostModel> make_default_cost_model(const std::string &model_path,
-                                                         const std::string &scaler_x_path,
-                                                         const std::string &scaler_y_path,
-                                                         const std::string &weights_out_path) {
+std::unique_ptr<DefaultCostModel> make_default_cost_model(
+    const std::string &model_path,
+    const std::string &scaler_params_path,
+    const std::string &weights_out_path) {
     return std::unique_ptr<DefaultCostModel>(
-        new DefaultCostModel(model_path, scaler_x_path, scaler_y_path, weights_out_path));
+        new DefaultCostModel(model_path, scaler_params_path, weights_out_path));
 }
 
 }  // namespace Halide
