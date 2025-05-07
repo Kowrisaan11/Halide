@@ -1,28 +1,23 @@
-THIS_MAKEFILE = $(realpath $(filter %Makefile, $(MAKEFILE_LIST)))
-SRC = $(strip $(shell dirname $(THIS_MAKEFILE)))
-HALIDE_SRC_ROOT = $(realpath $(SRC)/../../../)
-COMMON_DIR ?= $(realpath $(SRC)/../common/)
+# Makefile for Halide Adams2019 autoscheduler
+# Located at /home/kowrisaan/fyp/Halide/src/autoschedulers/adams2019/Makefile
 
+# Paths
+HALIDE_SRC_ROOT = ../../../../..
 HALIDE_DISTRIB_PATH ?= $(HALIDE_SRC_ROOT)/distrib
+HALIDE_TOOLS_DIR = $(HALIDE_DISTRIB_PATH)/tools
+HALIDE_INCLUDE_DIR = $(HALIDE_DISTRIB_PATH)/include
+HALIDE_LIB_DIR = $(HALIDE_DISTRIB_PATH)/lib
+COMMON_DIR = ../common
 
-$(info Looking for Halide distro at $(HALIDE_DISTRIB_PATH). If this is incorrect, set the make variable HALIDE_DISTRIB_PATH)
+# Compiler settings
+CXX ?= g++
+CXXFLAGS = -std=c++17 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden -O3 \
+           -Wall -Werror -Wno-unused-function -Wcast-qual -Wignored-qualifiers \
+           -Wno-comment -Wsign-compare -Wno-unknown-warning-option -Wno-psabi \
+           -I$(HALIDE_INCLUDE_DIR) -I$(HALIDE_TOOLS_DIR) -I$(COMMON_DIR)
+LDFLAGS = -L$(HALIDE_LIB_DIR) -lHalide -lpthread -ldl -lz -lrt -lm
 
-# Don't include an autoscheduler in the generator deps
-AUTOSCHEDULER=
-include $(HALIDE_SRC_ROOT)/apps/support/Makefile.inc
-
-# Add the relative location of libHalide.so in the rpath in a distro
-ifeq ($(UNAME), Darwin)
-HALIDE_RPATH_FOR_BIN = '-Wl,-rpath,@executable_path/../lib'
-HALIDE_RPATH_FOR_LIB = '-Wl,-rpath,@loader_path'
-else
-HALIDE_RPATH_FOR_BIN = '-Wl,-rpath,$$ORIGIN/../lib'
-HALIDE_RPATH_FOR_LIB = '-Wl,-rpath,$$ORIGIN'
-endif
-
-CXXFLAGS += -I$(COMMON_DIR)
-
-# LibTorch settings (adjust paths as needed)
+# LibTorch settings
 TORCH_ROOT = /home/kowrisaan/libtorch
 TORCH_INCLUDE = $(TORCH_ROOT)/include
 TORCH_LIB = $(TORCH_ROOT)/lib
@@ -30,43 +25,37 @@ TORCH_LIBS = -ltorch -ltorch_cpu -lc10
 CXXFLAGS += -I$(TORCH_INCLUDE)
 LDFLAGS += -L$(TORCH_LIB) $(TORCH_LIBS)
 
-# nlohmann/json settings (adjust paths as needed)
+# nlohmann/json settings
 JSON_INCLUDE = /usr/include
 CXXFLAGS += -I$(JSON_INCLUDE)
 
-AUTOSCHED_WEIGHT_OBJECTS=$(BIN)/baseline_weights.o
+# Source files
+SOURCES = \
+    AutoSchedule.cpp \
+    DefaultCostModel.cpp \
+    FunctionDAG.cpp
 
-$(BIN)/binary2cpp: $(HALIDE_SRC_ROOT)/tools/binary2cpp.cpp
-	@mkdir -p $(@D)
-	$(CXX) $< -o $@
+OBJECTS = $(SOURCES:.cpp=.o)
 
-$(BIN)/baseline_weights.cpp: $(BIN)/binary2cpp $(SRC)/baseline.weights
-	@mkdir -p $(@D)
-	$(BIN)/binary2cpp baseline_weights < $(SRC)/baseline.weights > $@
+# Target
+TARGET = bin/libautoschedule_adams2019.so
 
-$(BIN)/baseline_weights.o: $(BIN)/baseline_weights.cpp
-	$(CXX) -c $< -o $@
+all: $(TARGET)
 
-$(BIN)/libautoschedule_adams2019.$(PLUGIN_EXT): \
-				$(COMMON_DIR)/ASLog.cpp \
-				$(SRC)/AutoSchedule.cpp \
-				$(SRC)/Cache.cpp \
-				$(SRC)/DefaultCostModel.cpp \
-				$(SRC)/Weights.cpp \
-				$(SRC)/FunctionDAG.cpp \
-				$(SRC)/LoopNest.cpp \
-				$(SRC)/State.cpp \
-				$(AUTOSCHED_WEIGHT_OBJECTS) \
-				$(LIB_HALIDE)
-	@mkdir -p $(@D)
-	$(CXX) -shared $(USE_EXPORT_DYNAMIC) -fPIC -fvisibility=hidden -fvisibility-inlines-hidden $(CXXFLAGS) $(OPTIMIZE) \
-	       $(filter-out %.h $(LIBHALIDE_LDFLAGS),$^) -o $@ $(HALIDE_SYSTEM_LIBS) $(HALIDE_RPATH_FOR_LIB) -I $(SRC)
+$(TARGET): $(OBJECTS)
+	@mkdir -p bin
+	$(CXX) -shared -rdynamic $(OBJECTS) -o $@ $(LDFLAGS) -Wl,-rpath,'$$ORIGIN'
 
-$(BIN)/adams2019_weightsdir_to_weightsfile: $(SRC)/weightsdir_to_weightsfile.cpp $(SRC)/Weights.cpp
-	@mkdir -p $(@D)
-	$(CXX) $(CXXFLAGS) $^ $(OPTIMIZE) -o $@ -I $(SRC)
+AutoSchedule.o: AutoSchedule.cpp
+	$(CXX) $(CXXFLAGS) -c $< -o $@
 
-.PHONY: clean
+DefaultCostModel.o: DefaultCostModel.cpp
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+FunctionDAG.o: FunctionDAG.cpp
+	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 clean:
-	rm -rf $(BIN)
+	rm -rf $(OBJECTS) $(TARGET) bin
+
+.PHONY: all clean
