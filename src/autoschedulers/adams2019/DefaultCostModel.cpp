@@ -1,21 +1,41 @@
-#include "DefaultCostModel.h"
-#include <filesystem>
-#include <fstream>
 #include <algorithm>
-#include <iostream>
+#include <cmath>
+#include <filesystem>
+#include <map>
+#include <sstream>
+#include <vector>
+#include "ASLog.h"
+#include "DefaultCostModel.h"
+#include "HalideBuffer.h"
 
 namespace Halide {
 
-using json = nlohmann::json;
+namespace {
 
-static std::string to_lowercase(const std::string &input) {
+using Halide::Internal::aslog;
+using nlohmann::json;
+
+bool ends_with(const std::string &str, const std::string &suffix) {
+    if (str.size() < suffix.size()) {
+        return false;
+    }
+    size_t off = str.size() - suffix.size();
+    for (size_t i = 0; i < suffix.size(); i++) {
+        if (str[off + i] != suffix[i]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+std::string to_lowercase(const std::string &input) {
     std::string result = input;
     std::transform(result.begin(), result.end(), result.begin(),
                    [](unsigned char c) { return std::tolower(c); });
     return result;
 }
 
-json DefaultCostModel::load_json(const std::string &file_path) {
+json load_json(const std::string &file_path) {
     if (!std::filesystem::exists(file_path)) {
         throw std::runtime_error("File does not exist: " + file_path);
     }
@@ -32,50 +52,13 @@ json DefaultCostModel::load_json(const std::string &file_path) {
     }
 }
 
-ScalerParams DefaultCostModel::load_scaler_params(const std::string &scaler_path) {
-    try {
-        json scaler_data = load_json(scaler_path);
-        ScalerParams params;
-        params.feature_names = scaler_data["feature_names"].get<std::vector<std::string>>();
-        params.means = scaler_data["means"].get<std::vector<float>>();
-        params.scales = scaler_data["scales"].get<std::vector<float>>();
-        if (params.feature_names.size() != params.means.size() ||
-            params.means.size() != params.scales.size()) {
-            throw std::runtime_error("Scaler X dimensions mismatch in " + scaler_path);
-        }
-        std::cout << "Scaler X loaded with " << params.feature_names.size() << " features\n";
-        return params;
-    } catch (const std::exception &e) {
-        throw std::runtime_error("Failed to load scaler params from " + scaler_path + ": " + e.what());
-    }
-}
-
-YScalerParams DefaultCostModel::load_y_scaler_params(const std::string &scaler_path) {
-    try {
-        json scaler_data = load_json(scaler_path);
-        YScalerParams params;
-        params.mean = scaler_data["mean"].get<float>();
-        params.scale = scaler_data["scale"].get<float>();
-        params.is_log_transformed = scaler_data["is_log_transformed"].get<bool>();
-        std::cout << "Scaler Y loaded: mean=" << params.mean
-                  << ", scale=" << params.scale
-                  << ", is_log_transformed=" << params.is_log_transformed << "\n";
-        return params;
-    } catch (const std::exception &e) {
-        throw std::runtime_error("Failed to load Y scaler params from " + scaler_path + ": " + e.what());
-    }
-}
-
-std::map<std::string, float> DefaultCostModel::extract_features(const json &data) {
+std::map<std::string, float> extract_features(const json &data) {
     std::map<std::string, float> features;
-    float execution_time = -1.0f; // Not used for prediction
-    features["execution_time"] = execution_time;
 
     auto prog_details = data.contains("programming_details") ? data["programming_details"] : json();
     std::vector<std::map<std::string, float>> nodes_features;
     std::vector<std::map<std::string, std::string>> edges_features;
 
-    // Extract node features
     if (prog_details.contains("Nodes")) {
         for (const auto &node : prog_details["Nodes"]) {
             std::map<std::string, float> node_feature;
@@ -98,7 +81,6 @@ std::map<std::string, float> DefaultCostModel::extract_features(const json &data
         }
     }
 
-    // Extract edge features
     if (prog_details.contains("Edges")) {
         for (const auto &edge : prog_details["Edges"]) {
             std::map<std::string, std::string> edge_feature;
@@ -109,7 +91,6 @@ std::map<std::string, float> DefaultCostModel::extract_features(const json &data
         }
     }
 
-    // Extract scheduling features
     std::vector<std::map<std::string, float>> sched_features;
     auto scheduling_data = data.contains("scheduling_data") ? data["scheduling_data"].get<std::vector<json>>()
                                                            : (prog_details.contains("Schedules") ? prog_details["Schedules"].get<std::vector<json>>()
@@ -129,13 +110,11 @@ std::map<std::string, float> DefaultCostModel::extract_features(const json &data
         sched_features.push_back(sched_feature);
     }
 
-    // Basic features
     features["nodes_count"] = static_cast<float>(nodes_features.size());
     features["edges_count"] = static_cast<float>(edges_features.size());
     features["scheduling_count"] = static_cast<float>(sched_features.size());
     features["node_edge_ratio"] = edges_features.size() > 0 ? nodes_features.size() / static_cast<float>(edges_features.size()) : 0.0f;
 
-    // Operation counts
     std::map<std::string, float> op_counts;
     for (const auto &node : nodes_features) {
         for (const auto &[key, value] : node) {
@@ -146,7 +125,6 @@ std::map<std::string, float> DefaultCostModel::extract_features(const json &data
     }
     features.insert(op_counts.begin(), op_counts.end());
 
-    // Scheduling features (use first entry)
     if (!sched_features.empty()) {
         std::vector<std::string> important_metrics = {
             "bytes_at_production", "bytes_at_realization", "bytes_at_root", "bytes_at_task",
@@ -191,7 +169,6 @@ std::map<std::string, float> DefaultCostModel::extract_features(const json &data
         features["memory_pressure"] = 0.0f;
     }
 
-    // Node operation statistics
     if (!nodes_features.empty()) {
         float total_ops = 0.0f;
         for (const auto &[_, count] : op_counts) {
@@ -204,17 +181,22 @@ std::map<std::string, float> DefaultCostModel::extract_features(const json &data
         features["op_diversity"] = 0.0f;
     }
 
+    aslog(1) << "Extracted features:\n";
+    for (const auto &[key, value] : features) {
+        aslog(1) << "  " << key << ": " << value << "\n";
+    }
+
     return features;
 }
 
-torch::Tensor DefaultCostModel::prepare_input_tensor(const std::map<std::string, float> &features,
-                                                    const ScalerParams &scaler_x) {
-    std::vector<float> feature_vector(scaler_x.feature_names.size(), 0.0f);
+torch::Tensor prepare_input_tensor(const std::map<std::string, float> &features,
+                                  const ScalerParams &scaler_X) {
+    std::vector<float> feature_vector(scaler_X.feature_names.size(), 0.0f);
     std::vector<std::string> missing_features;
     std::vector<std::string> unused_features;
 
-    for (size_t i = 0; i < scaler_x.feature_names.size(); ++i) {
-        const std::string &key = scaler_x.feature_names[i];
+    for (size_t i = 0; i < scaler_X.feature_names.size(); ++i) {
+        const std::string &key = scaler_X.feature_names[i];
         if (features.count(key)) {
             feature_vector[i] = features.at(key);
         } else {
@@ -226,78 +208,93 @@ torch::Tensor DefaultCostModel::prepare_input_tensor(const std::map<std::string,
     for (const auto &feature : features) {
         const std::string &key = feature.first;
         if (key != "execution_time" &&
-            std::find(scaler_x.feature_names.begin(), scaler_x.feature_names.end(), key) ==
-                scaler_x.feature_names.end()) {
+            std::find(scaler_X.feature_names.begin(), scaler_X.feature_names.end(), key) ==
+                scaler_X.feature_names.end()) {
             unused_features.push_back(key);
         }
     }
 
     if (!missing_features.empty()) {
-        std::cerr << "Warning: " << missing_features.size() << " features missing, set to 0:\n";
+        aslog(1) << "Warning: " << missing_features.size() << " features missing, set to 0:\n";
         for (const auto &key : missing_features) {
-            std::cerr << "  " << key << "\n";
+            aslog(1) << "  " << key << "\n";
         }
     }
     if (!unused_features.empty()) {
-        std::cerr << "Warning: " << unused_features.size() << " features extracted but not used:\n";
+        aslog(1) << "Warning: " << unused_features.size() << " features extracted but not used:\n";
         for (const auto &key : unused_features) {
-            std::cerr << "  " << key << "\n";
+            aslog(1) << "  " << key << "\n";
         }
     }
 
     torch::Tensor x = torch::tensor(feature_vector, torch::kFloat32);
-    torch::Tensor means = torch::tensor(scaler_x.means, torch::kFloat32);
-    torch::Tensor scales = torch::tensor(scaler_x.scales, torch::kFloat32);
+    torch::Tensor means = torch::tensor(scaler_X.means, torch::kFloat32);
+    torch::Tensor scales = torch::tensor(scaler_X.scales, torch::kFloat32);
     scales = torch::where(scales == 0, torch::ones_like(scales), scales);
     x = (x - means) / scales;
 
     torch::Tensor input_tensor = x.reshape({1, 1, -1});
+    aslog(1) << "Input tensor shape: " << input_tensor.sizes() << "\n";
     return input_tensor;
 }
 
-float DefaultCostModel::run_prediction(const torch::Tensor &input_tensor) {
+float run_prediction(const torch::Tensor &input_tensor, const torch::jit::script::Module &model) {
     try {
-        pytorch_model->eval();
         torch::NoGradGuard no_grad;
         torch::Tensor input = input_tensor.to(torch::kCPU);
         std::vector<torch::jit::IValue> inputs = {input};
-        auto output = pytorch_model->forward(inputs).toTensor();
+        auto output = model.forward(inputs).toTensor();
         float prediction = output.item<float>();
+        aslog(1) << "Model output: " << prediction << "\n";
         return prediction;
     } catch (const std::exception &e) {
         throw std::runtime_error("Model inference failed: " + std::string(e.what()));
     }
 }
 
-float DefaultCostModel::inverse_transform_prediction(float scaled_prediction, const YScalerParams &y_scaler) {
+float inverse_transform_prediction(float scaled_prediction, const YScalerParams &y_scaler) {
     float unscaled = scaled_prediction * y_scaler.scale + y_scaler.mean;
     float result = y_scaler.is_log_transformed ? std::expm1(unscaled) : unscaled;
+    aslog(1) << "Inverse transformed prediction: " << result << " ms\n";
     return result;
 }
 
-void DefaultCostModel::load_model_and_scalers() {
-    try {
-        std::cout << "Loading PyTorch model from " << model_path << "\n";
-        pytorch_model = torch::jit::load(model_path, torch::kCPU);
-        pytorch_model->eval();
-        pytorch_model->to(torch::kCPU);
-    } catch (const std::exception &e) {
-        throw std::runtime_error("Failed to load PyTorch model from " + model_path + ": " + e.what());
-    }
+}  // namespace
 
-    scaler_x = load_scaler_params(scaler_x_path);
-    scaler_y = load_y_scaler_params(scaler_y_path);
+DefaultCostModel::DefaultCostModel(const std::string &weights_in_path,
+                                   const std::string &weights_out_path,
+                                   bool randomize_weights)
+    : weights_in_path(weights_in_path),
+      weights_out_path(weights_out_path),
+      randomize_weights(randomize_weights) {
+    load_weights();
 }
 
-void DefaultCostModel::set_pipeline_features(const std::string &json_path, int n) {
-    json data = load_json(json_path);
-    features = extract_features(data);
+void DefaultCostModel::set_pipeline_features(const Internal::Autoscheduler::FunctionDAG &dag,
+                                            const Internal::Autoscheduler::Adams2019Params &params) {
+    // Load JSON IR from file (assumes get_representation() has been called)
+    std::string json_path = "/home/kowrisaan/fyp/Halide/src/autoschedulers/adams2019/tree_representation.json";
+    json_data = load_json(json_path);
+    num_cores = params.parallelism;
+    internal_assert(num_cores > 0);
+}
+
+void DefaultCostModel::set_pipeline_features(const nlohmann::json &json_ir, int n) {
+    json_data = json_ir;
     num_cores = n;
+    internal_assert(num_cores > 0);
 }
 
-void DefaultCostModel::enqueue(int ns, double *cost_ptr) {
+void DefaultCostModel::enqueue(const Internal::Autoscheduler::FunctionDAG &dag,
+                              const Halide::Internal::Autoscheduler::StageMapOfScheduleFeatures &schedule_feats,
+                              double *cost_ptr) {
+    // Use the stored JSON IR
+    std::map<std::string, float> features = extract_features(json_data);
+    torch::Tensor input_tensor = prepare_input_tensor(features, scaler_X);
+
     const int batch_size = 1024;
-    if (!costs.data()) {
+    if (!input_tensors.data()) {
+        input_tensors = Runtime::Buffer<float>(batch_size, scaler_X.feature_names.size());
         costs = Runtime::Buffer<float>(batch_size);
         cost_ptrs = Runtime::Buffer<double *>(batch_size);
     }
@@ -306,42 +303,125 @@ void DefaultCostModel::enqueue(int ns, double *cost_ptr) {
         evaluate_costs();
     }
 
+    Runtime::Buffer<float> tensor_slice = input_tensors.sliced(0, cursor);
+    std::memcpy(tensor_slice.data(), input_tensor.data_ptr<float>(),
+                scaler_X.feature_names.size() * sizeof(float));
+    cost_ptrs(cursor) = cost_ptr;
+    cursor++;
+}
+
+void DefaultCostModel::enqueue(int batch_idx, Runtime::Buffer<float> *input_tensor, double *cost_ptr) {
+    internal_assert(batch_idx >= 0 && batch_idx < 1024);
+    const int batch_size = 1024;
+    if (!input_tensors.data()) {
+        input_tensors = Runtime::Buffer<float>(batch_size, scaler_X.feature_names.size());
+        costs = Runtime::Buffer<float>(batch_size);
+        cost_ptrs = Runtime::Buffer<double *>(batch_size);
+    }
+
+    if (cursor == batch_size) {
+        evaluate_costs();
+    }
+
+    *input_tensor = input_tensors.sliced(0, cursor);
     cost_ptrs(cursor) = cost_ptr;
     cursor++;
 }
 
 void DefaultCostModel::evaluate_costs() {
-    if (cursor == 0) {
+    if (cursor == 0 || !input_tensors.data()) {
         return;
     }
 
-    torch::Tensor input_tensor = prepare_input_tensor(features, scaler_x);
-    float scaled_prediction = run_prediction(input_tensor);
-    float prediction = inverse_transform_prediction(scaled_prediction, scaler_y);
-
+    internal_assert(pytorch_model);
     Runtime::Buffer<float> dst = costs.cropped(0, 0, cursor);
+
+    for (int i = 0; i < cursor; ++i) {
+        Runtime::Buffer<float> tensor_slice = input_tensors.sliced(0, i);
+        torch::Tensor input = torch::from_blob(tensor_slice.data(),
+                                              {1, 1, scaler_X.feature_names.size()},
+                                              torch::kFloat32);
+        float scaled_prediction = run_prediction(input, *pytorch_model);
+        dst(i) = inverse_transform_prediction(scaled_prediction, scaler_y);
+    }
+
+    bool any_nans = false;
     for (int i = 0; i < cursor; i++) {
-        dst(i) = prediction;
-        if (cost_ptrs(i)) {
-            *(cost_ptrs(i)) = prediction;
+        internal_assert(cost_ptrs(i));
+        *(cost_ptrs(i)) = dst(i);
+        if (std::isnan(dst(i))) {
+            any_nans = true;
+            aslog(1) << "Prediction " << i << " is NaN\n";
         }
-        if (std::isnan(prediction)) {
-            std::cerr << "Prediction is NaN\n";
-            throw std::runtime_error("NaN prediction detected");
-        }
+    }
+    if (any_nans) {
+        input_tensors.for_each_value([](float f) { if (std::isnan(f)) abort(); });
+        abort();
     }
 
     cursor = 0;
+}
+
+void DefaultCostModel::load_weights() {
+    // Load PyTorch model
+    std::string model_path = "/home/kowrisaan/fyp/Halide/src/autoschedulers/adams2019/model.pt";
+    aslog(1) << "Loading PyTorch model from " << model_path << " ...\n";
+    try {
+        pytorch_model = std::make_shared<torch::jit::script::Module>(
+            torch::jit::load(model_path, torch::kCPU));
+        pytorch_model->eval();
+    } catch (const std::exception &e) {
+        std::cerr << "Failed to load PyTorch model: " << e.what() << "\n";
+        abort();
+    }
+
+    // Load scaler parameters
+    std::string scaler_path = "/home/kowrisaan/fyp/Halide/src/autoschedulers/adams2019/scaler_params.json";
+    aslog(1) << "Loading scaler params from " << scaler_path << " ...\n";
+    try {
+        json scaler_data = load_json(scaler_path);
+        scaler_X.feature_names = scaler_data["feature_names"].get<std::vector<std::string>>();
+        scaler_X.means = scaler_data["means"].get<std::vector<float>>();
+        scaler_X.scales = scaler_data["scales"].get<std::vector<float>>();
+        scaler_y.mean = scaler_data["y_mean"].get<float>();
+        scaler_y.scale = scaler_data["y_scale"].get<float>();
+        scaler_y.is_log_transformed = scaler_data["is_log_transformed"].get<bool>();
+
+        if (scaler_X.feature_names.size() != scaler_X.means.size() ||
+            scaler_X.means.size() != scaler_X.scales.size()) {
+            throw std::runtime_error("Scaler X dimensions mismatch in " + scaler_path);
+        }
+        aslog(1) << "Scaler X loaded with " << scaler_X.feature_names.size() << " features\n";
+        aslog(1) << "Scaler Y loaded: mean=" << scaler_y.mean
+                 << ", scale=" << scaler_y.scale
+                 << ", is_log_transformed=" << scaler_y.is_log_transformed << "\n";
+    } catch (const std::exception &e) {
+        std::cerr << "Failed to load scaler params: " << e.what() << "\n";
+        abort();
+    }
+}
+
+void DefaultCostModel::save_weights() {
+    if (weights_out_path.empty() || !pytorch_model) {
+        return;
+    }
+    if (ends_with(weights_out_path, ".pt")) {
+        torch::jit::save(*pytorch_model, weights_out_path);
+        aslog(1) << "Saved PyTorch model to " << weights_out_path << "\n";
+    } else {
+        std::cerr << "WARNING: Saving PyTorch model requires .pt extension\n";
+    }
 }
 
 void DefaultCostModel::reset() {
     cursor = 0;
 }
 
-std::unique_ptr<DefaultCostModel> make_default_cost_model(const std::string &model_path,
-                                                         const std::string &scaler_x_path,
-                                                         const std::string &scaler_y_path) {
-    return std::unique_ptr<DefaultCostModel>(new DefaultCostModel(model_path, scaler_x_path, scaler_y_path));
+std::unique_ptr<DefaultCostModel> make_default_cost_model(const std::string &weights_in_path,
+                                                         const std::string &weights_out_path,
+                                                         bool randomize_weights) {
+    return std::unique_ptr<DefaultCostModel>(
+        new DefaultCostModel(weights_in_path, weights_out_path, randomize_weights));
 }
 
-} // namespace Halide
+}  // namespace Halide
