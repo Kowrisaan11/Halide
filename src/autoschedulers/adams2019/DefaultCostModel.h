@@ -43,18 +43,15 @@ private:
     int cursor = 0;                                            // Batch cursor
     int num_cores = 0;                                         // Number of CPU cores
     const std::string model_path;                              // Path to model.pt
-    const std::string scaler_x_path;                           // Path to scaler_X.json
-    const std::string scaler_y_path;                           // Path to scaler_y.json
+    const std::string scaler_params_path;                      // Path to scaler_params.json
     const std::string weights_out_path;                        // Optional output path
 
 public:
     DefaultCostModel(const std::string &model_path,
-                     const std::string &scaler_x_path,
-                     const std::string &scaler_y_path,
+                     const std::string &scaler_params_path,
                      const std::string &weights_out_path)
         : model_path(model_path),
-          scaler_x_path(scaler_x_path),
-          scaler_y_path(scaler_y_path),
+          scaler_params_path(scaler_params_path),
           weights_out_path(weights_out_path) {
         load_weights();
     }
@@ -82,16 +79,18 @@ public:
     void load_weights();
 
 private:
-    // Helper methods for preprocessing (adapted from main.cpp)
+    // Helper methods for preprocessing
     std::map<std::string, float> extract_features(const nlohmann::json &data);
     torch::Tensor prepare_input_tensor(const std::map<std::string, float> &features);
     float inverse_transform_prediction(float scaled_prediction);
+    ScalerParams load_scaler_x_params(const nlohmann::json &scaler_data);
+    YScalerParams load_scaler_y_params(const nlohmann::json &scaler_data);
 };
 
-std::unique_ptr<DefaultCostModel> make_default_cost_model(const std::string &model_path = "model.pt",
-                                                         const std::string &scaler_x_path = "scaler_X.json",
-                                                         const std::string &scaler_y_path = "scaler_y.json",
-                                                         const std::string &weights_out_path = "");
+std::unique_ptr<DefaultCostModel> make_default_cost_model(
+    const std::string &model_path = "/home/kowrisaan/fyp/Halide/model.pt",
+    const std::string &scaler_params_path = "/home/kowrisaan/fyp/Halide/scaler_params.json",
+    const std::string &weights_out_path = "");
 
 }  // namespace Halide
 
