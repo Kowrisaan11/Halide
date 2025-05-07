@@ -20,18 +20,6 @@ HALIDE_RPATH_FOR_BIN = '-Wl,-rpath,$$ORIGIN/../lib'
 HALIDE_RPATH_FOR_LIB = '-Wl,-rpath,$$ORIGIN'
 endif
 
-# LibTorch settings
-TORCH_ROOT = /home/kowrisaan/libtorch
-TORCH_INCLUDE = $(TORCH_ROOT)/include
-TORCH_LIB = $(TORCH_ROOT)/lib
-TORCH_LIBS = -ltorch -ltorch_cpu -lc10
-CXXFLAGS += -I$(TORCH_INCLUDE)
-HALIDE_SYSTEM_LIBS += -L$(TORCH_LIB) $(TORCH_LIBS) -Wl,-rpath,$(TORCH_LIB)
-
-# nlohmann/json settings
-JSON_INCLUDE = /usr/include
-CXXFLAGS += -I$(JSON_INCLUDE)
-
 CXXFLAGS += -I$(COMMON_DIR)
 
 AUTOSCHED_WEIGHT_OBJECTS=$(BIN)/baseline_weights.o
