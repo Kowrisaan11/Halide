@@ -2,7 +2,7 @@
 # Located at /home/kowrisaan/fyp/Halide/src/autoschedulers/adams2019/Makefile
 
 # Paths
-HALIDE_SRC_ROOT = ../../../../..
+HALIDE_SRC_ROOT = /home/kowrisaan/fyp/Halide/src
 HALIDE_DISTRIB_PATH ?= $(HALIDE_SRC_ROOT)/distrib
 HALIDE_TOOLS_DIR = $(HALIDE_DISTRIB_PATH)/tools
 HALIDE_INCLUDE_DIR = $(HALIDE_DISTRIB_PATH)/include
