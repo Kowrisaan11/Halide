@@ -1,75 +1,98 @@
 #ifndef DEFAULT_COST_MODEL_H
 #define DEFAULT_COST_MODEL_H
 
-#include "CostModel.h"
-#include "Weights.h"
+#include <torch/script.h>
+#include <nlohmann/json.hpp>
 #include <string>
+#include <vector>
+#include "HalideBuffer.h"
 
 namespace Halide {
 
 namespace Internal {
 namespace Autoscheduler {
 struct Adams2019Params;
+struct FunctionDAG;
+struct StageMapOfScheduleFeatures;
 }  // namespace Autoscheduler
 }  // namespace Internal
 
-class DefaultCostModel : public CostModel {
+// Scaler parameters for input features
+struct ScalerParams {
+    std::vector<std::string> feature_names;
+    std::vector<float> means;
+    std::vector<float> scales;
+};
+
+// Scaler parameters for output (execution time)
+struct YScalerParams {
+    float mean;
+    float scale;
+    bool is_log_transformed;
+};
+
+class DefaultCostModel {
 private:
-    Internal::Weights weights;
-    Runtime::Buffer<float> schedule_feat_queue, pipeline_feat_queue, costs;
-    Runtime::Buffer<double *> cost_ptrs;
-    int cursor, num_stages, num_cores;
-
-    const std::string weights_in_path, weights_out_path;
-    const bool randomize_weights;
-
-    Runtime::Buffer<float>
-        head1_filter_update, head1_bias_update,
-        head2_filter_update, head2_bias_update,
-        conv1_filter_update, conv1_bias_update;
-    int timestep = 0;
+    std::shared_ptr<torch::jit::script::Module> pytorch_model;  // PyTorch model
+    ScalerParams scaler_X;                                     // Input feature scaler
+    YScalerParams scaler_y;                                    // Output scaler
+    nlohmann::json json_ir;                                    // JSON IR from get_representation()
+    Runtime::Buffer<float> feature_queue;                      // Batched input features
+    Runtime::Buffer<float> costs;                              // Predicted costs
+    Runtime::Buffer<double*> cost_ptrs;                        // Pointers to store costs
+    int cursor = 0;                                            // Batch cursor
+    int num_cores = 0;                                         // Number of CPU cores
+    const std::string model_path;                              // Path to model.pt
+    const std::string scaler_x_path;                           // Path to scaler_X.json
+    const std::string scaler_y_path;                           // Path to scaler_y.json
+    const std::string weights_out_path;                        // Optional output path
 
 public:
-    DefaultCostModel(const std::string &weights_in_path,
-                     const std::string &weights_out_path,
-                     bool randomize_weights)
-        : weights_in_path(weights_in_path),
-          weights_out_path(weights_out_path),
-          randomize_weights(randomize_weights) {
-
+    DefaultCostModel(const std::string &model_path,
+                     const std::string &scaler_x_path,
+                     const std::string &scaler_y_path,
+                     const std::string &weights_out_path)
+        : model_path(model_path),
+          scaler_x_path(scaler_x_path),
+          scaler_y_path(scaler_y_path),
+          weights_out_path(weights_out_path) {
         load_weights();
     }
     ~DefaultCostModel() override = default;
 
-    // Configure the cost model for the algorithm to be scheduled.
+    // Configure the cost model with JSON IR from get_representation()
+    void set_pipeline_features(const nlohmann::json &json_ir, int num_cores);
     void set_pipeline_features(const Internal::Autoscheduler::FunctionDAG &dag,
-                               const Internal::Autoscheduler::Adams2019Params &params) override;
-    void set_pipeline_features(const Runtime::Buffer<float> &, int n);
+                              const Internal::Autoscheduler::Adams2019Params &params);
 
-    // Enqueue a schedule to be evaluated. The second version of this method returns a buffer of
-    // schedule_features that should be filled in by the caller.
-    void enqueue(const Internal::Autoscheduler::FunctionDAG &dag,
-                 const Halide::Internal::Autoscheduler::StageMapOfScheduleFeatures &schedule_feats,
-                 double *cost_ptr) override;
+    // Enqueue a schedule for evaluation
     void enqueue(int ns, Runtime::Buffer<float> *schedule_feats, double *cost_ptr);
+    void enqueue(const Internal::Autoscheduler::FunctionDAG &dag,
+                 const Internal::Autoscheduler::StageMapOfScheduleFeatures &schedule_feats,
+                 double *cost_ptr);
 
-    // Evaluate all schedules in the queue.
-    void evaluate_costs() override;
+    // Evaluate all schedules in the queue
+    void evaluate_costs();
 
-    // Discard all schedules in the queue.
-    void reset() override;
+    // Discard all schedules in the queue
+    void reset();
 
-    // Update model weights using true measured runtimes.
-    float backprop(const Runtime::Buffer<const float> &true_runtimes, float learning_rate);
-
-    // Save/Load the model weights to/from disk.
+    // Save/Load the model and scalers
     void save_weights();
     void load_weights();
+
+private:
+    // Helper methods for preprocessing (adapted from main.cpp)
+    std::map<std::string, float> extract_features(const nlohmann::json &data);
+    torch::Tensor prepare_input_tensor(const std::map<std::string, float> &features);
+    float inverse_transform_prediction(float scaled_prediction);
 };
 
-std::unique_ptr<DefaultCostModel> make_default_cost_model(const std::string &weights_in_dir = "",
-                                                          const std::string &weights_out_dir = "",
-                                                          bool randomize_weights = false);
+std::unique_ptr<DefaultCostModel> make_default_cost_model(const std::string &model_path = "model.pt",
+                                                         const std::string &scaler_x_path = "scaler_X.json",
+                                                         const std::string &scaler_y_path = "scaler_y.json",
+                                                         const std::string &weights_out_path = "");
+
 }  // namespace Halide
 
 #endif  // DEFAULT_COST_MODEL_H
