@@ -1,15 +1,6 @@
 /*
-  Modified AutoSchedule.cpp for Adams2019 autoscheduler with SimpleLSTMModel.
-  Integrates LibTorch-based LSTM cost model and custom TreeRepresentation.
-  Core functionality:
-  - Navigates search space using beam search.
-  - Computes featurization using FunctionDAG and Featurization.
-  - Evaluates costs using SimpleLSTMModel with model.pt and scaler_params.json.
-  - Applies schedules to Halide pipeline.
-
-  Environment variables:
-  - HL_DEBUG_AUTOSCHEDULE: Debug log level (0-2).
-  - HL_PERMIT_FAILED_UNROLL: Set to 1 to allow non-constant unrolling.
+  AutoSchedule.cpp: Implementation of Adams2019 autoscheduler with SimpleLSTMModel.
+  Uses beam search with a PyTorch-based LSTM cost model for scheduling.
 */
 
 #include "HalidePlugin.h"
@@ -28,7 +19,6 @@
 #include "ASLog.h"
 #include "AutoSchedule.h"
 #include "FunctionDAG.h"
-#include "Featurization.h"
 #include "SimpleLSTMModel.h"
 #include "TreeRepresentation.h"
 #include "Halide.h"
@@ -183,7 +173,6 @@ IntrusivePtr<State> optimal_schedule_pass(FunctionDAG &dag,
         }
 
         pending.clear();
-        cost_model.evaluate_costs();
         q.resort();
     }
 }
