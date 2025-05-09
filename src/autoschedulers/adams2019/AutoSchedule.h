@@ -16,12 +16,12 @@ namespace Internal {
 namespace Autoscheduler {
 
 struct Adams2019Params {
-    int beam_size = 32;              // Number of states to track in beam search
-    int random_dropout = 80;         // Percentage chance to keep states (0-100)
-    int random_dropout_seed = 0;     // Seed for random dropout
-    bool disable_subtiling = false;  // Disable subtiling in scheduling
-    int parallelism = 4;             // Number of threads for parallel execution
-    int64_t memory_limit = 1ULL << 30; // Memory limit in bytes (default 1GB)
+    int beam_size = 32;
+    int random_dropout = 80;
+    int random_dropout_seed = 0;
+    bool disable_subtiling = false;
+    int parallelism = 4;
+    int64_t memory_limit = 1ULL << 30;
 
     Adams2019Params() = default;
 };
