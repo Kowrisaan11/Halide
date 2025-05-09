@@ -1,4 +1,3 @@
-cat > /home/kowrisaan/fyp/Halide/src/autoschedulers/adams2019/AutoSchedule.h << 'EOF'
 /*
   AutoSchedule.h: Header for Adams2019 autoscheduler with SimpleLSTMModel integration.
   Defines parameters and interface for generating schedules using beam search
