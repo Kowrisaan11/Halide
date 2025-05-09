@@ -36,4 +36,3 @@ void generate_schedule(const std::vector<Function> &outputs,
 }  // namespace Halide
 
 #endif // AUTOSCHEDULE_H
-EOF
