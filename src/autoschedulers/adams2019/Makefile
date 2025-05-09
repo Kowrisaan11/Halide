@@ -1,60 +1,52 @@
+THIS_MAKEFILE = $(realpath $(filter %Makefile, $(MAKEFILE_LIST)))
+SRC = $(strip $(shell dirname $(THIS_MAKEFILE)))
+HALIDE_SRC_ROOT = $(realpath $(SRC)/../../../)
+COMMON_DIR ?= $(realpath $(SRC)/../common/)
 
-# Makefile for Adams2019 autoscheduler
+HALIDE_DISTRIB_PATH ?= $(HALIDE_SRC_ROOT)/distrib
 
-CXX = g++
-CXXFLAGS = -g -O3 -std=c++17 -Wall -Werror -Wno-unused-function -Wcast-qual -Wignored-qualifiers \
-           -Wno-comment -Wsign-compare -Wno-unknown-warning-option -Wno-psabi \
-           -fPIC -fvisibility=hidden -fvisibility-inlines-hidden \
-           -I$(HALIDE_DISTRIB_PATH)/include -I$(HALIDE_DISTRIB_PATH)/tools \
-           -I/home/kowrisaan/fyp/Halide/src \
-           -I/home/kowrisaan/libtorch/include -I/usr/include/nlohmann
-LDFLAGS = -L$(HALIDE_DISTRIB_PATH)/lib -L/home/kowrisaan/libtorch/lib \
-          -lHalide -ltorch -ltorch_cpu -lc10 -lpthread -ldl
-NLOHMANN_JSON = -I/home/kowrisaan/fyp/libtorch/include/nlohmann
+$(info Looking for Halide distro at $(HALIDE_DISTRIB_PATH). If this is incorrect, set the make variable HALIDE_DISTRIB_PATH)
 
+# Don't include an autoscheduler in the generator deps
+AUTOSCHEDULER=
+include $(HALIDE_SRC_ROOT)/apps/support/Makefile.inc
 
-SOURCES = AutoSchedule.cpp FunctionDAG.cpp Featurization.cpp SimpleLSTMModel.cpp TreeRepresentation.cpp State.cpp
-OBJECTS = $(SOURCES:.cpp=.o)
-DEPS = $(SOURCES:.cpp=.d)
+# Add the relative location of libHalide.so in the rpath in a distro
+ifeq ($(UNAME), Darwin)
+HALIDE_RPATH_FOR_BIN = '-Wl,-rpath,@executable_path/../lib'
+HALIDE_RPATH_FOR_LIB = '-Wl,-rpath,@loader_path'
+else
+HALIDE_RPATH_FOR_BIN = '-Wl,-rpath,$$ORIGIN/../lib'
+HALIDE_RPATH_FOR_LIB = '-Wl,-rpath,$$ORIGIN'
+endif
 
-all: libautoschedule_adams2019.a bin/libautoschedule_adams2019.so
+CXXFLAGS += -I$(COMMON_DIR) -I$(HALIDE_SRC_ROOT)/src -I/home/kowrisaan/libtorch/include -I/usr/include/nlohmann
+LDFLAGS += -L/home/kowrisaan/libtorch/lib -ltorch -ltorch_cpu -lc10 -lpthread -ldl
 
-libautoschedule_adams2019.a: $(OBJECTS)
-	@ar rcs $@ $^
+$(BIN)/libautoschedule_adams2019.$(PLUGIN_EXT): \
+				$(COMMON_DIR)/ASLog.cpp \
+				$(SRC)/AutoSchedule.cpp \
+				$(SRC)/Cache.h \
+				$(SRC)/Cache.cpp \
+				$(SRC)/SimpleLSTMModel.h \
+				$(SRC)/SimpleLSTMModel.cpp \
+				$(SRC)/Weights.h \
+				$(SRC)/Weights.cpp \
+				$(SRC)/FunctionDAG.h \
+				$(SRC)/FunctionDAG.cpp \
+				$(SRC)/Featurization.h \
+				$(SRC)/CostModel.h \
+				$(SRC)/State.h \
+				$(SRC)/State.cpp \
+				$(SRC)/TreeRepresentation.h \
+				$(SRC)/TreeRepresentation.cpp \
+				$(SRC)/Timer.h \
+				$(COMMON_DIR)/PerfectHashMap.h \
+				| $(LIB_HALIDE)
+	@mkdir -p $(@D)
+	$(CXX) -shared $(USE_EXPORT_DYNAMIC) -fPIC -fvisibility=hidden -fvisibility-inlines-hidden $(CXXFLAGS) $(OPTIMIZE) $(filter-out %.h $(LIBHALIDE_LDFLAGS),$^) -o $@ $(HALIDE_SYSTEM_LIBS) $(HALIDE_RPATH_FOR_LIB) $(LDFLAGS)
 
-bin/libautoschedule_adams2019.so: $(OBJECTS)
-	@echo "Linking $@"
-	@$(CXX) -shared -rdynamic $(OBJECTS) $(LDFLAGS) -o $@ '-Wl,-rpath,$$ORIGIN'
-
-%.o: %.cpp
-	@echo "Compiling $<"
-	@$(CXX) $(CXXFLAGS) $(NLOHMANN_JSON) -c $< -o $@ -v 2> $(basename $<).err
-	@if [ -s $(basename $<).err ]; then cat $(basename $<).err; exit 1; fi
-
-%.d: %.cpp
-	@echo "Generating dependencies for $<"
-	@$(CXX) $(CXXFLAGS) $(NLOHMANN_JSON) -M $< > $@ -v
-
-bin:
-	@mkdir -p bin
+.PHONY: clean
 
 clean:
-	@rm -f *.o *.d *.err libautoschedule_adams2019.a bin/libautoschedule_adams2019.so
-
-check-sources:
-	@for src in $(SOURCES); do \
-		if [ ! -f "$$src" ]; then \
-			echo "Error: Source file $$src is missing"; \
-			exit 1; \
-		fi; \
-		if [ ! -s "$$src" ]; then \
-			echo "Error: Source file $$src is empty"; \
-			exit 1; \
-		fi; \
-	done
-
-all: check-sources
-
--include $(DEPS)
-
-.PHONY: all clean check-sources
+	rm -rf $(BIN)
