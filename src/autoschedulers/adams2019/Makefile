@@ -20,8 +20,8 @@ HALIDE_RPATH_FOR_BIN = '-Wl,-rpath,$$ORIGIN/../lib'
 HALIDE_RPATH_FOR_LIB = '-Wl,-rpath,$$ORIGIN'
 endif
 
-CXXFLAGS += -I$(COMMON_DIR) -I$(HALIDE_SRC_ROOT)/src -I/home/kowrisaan/libtorch/include -I/usr/include/nlohmann
-LDFLAGS += -L/home/kowrisaan/libtorch/lib -ltorch -ltorch_cpu -lc10 -lpthread -ldl
+CXXFLAGS += -I$(COMMON_DIR) -I$(HALIDE_SRC_ROOT)/src -I/home/kowrisaan/fyp/libtorch/include -I/usr/include/nlohmann
+LDFLAGS += -L/home/kowrisaan/fyp/libtorch/lib -ltorch -ltorch_cpu -lc10 -lpthread -ldl
 
 $(BIN)/libautoschedule_adams2019.$(PLUGIN_EXT): \
 				$(COMMON_DIR)/ASLog.cpp \
