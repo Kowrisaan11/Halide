@@ -47,7 +47,7 @@ public:
     Input<int>           num_nodes{      "num_nodes",       1};
     Input<Buffer<float>> node_features{  "node_features",   2};
     Input<Buffer<int>>   edge_index{     "edge_index",      2};
-    Input<Buffer<float>> true_runtime{   "true_runtime",    1};  // optional
+    Input<Buffer<float>> actual_execution_time{   "actual_execution_time",    1};
 
     // Outputs
     Output<Buffer<float>> prediction_output{ "prediction_output", 1 };
