@@ -8,9 +8,9 @@ CXXFLAGS = -g -O3 -std=c++17 -Wall -Werror -Wno-unused-function -Wcast-qual -Wig
            -I/home/kowrisaan/libtorch/include -I/usr/include/nlohmann
 LDFLAGS = -L$(HALIDE_DISTRIB_PATH)/lib -L/home/kowrisaan/libtorch/lib \
           -lHalide -ltorch -ltorch_cpu -lc10 -lpthread -ldl
-
 NLOHMANN_JSON = -I/home/kowrisaan/fyp/libtorch/include/nlohmann
-SOURCES = AutoSchedule.cpp FunctionDAG.cpp Featurization.cpp SimpleLSTMModel.cpp TreeRepresentation.cpp
+
+SOURCES = AutoSchedule.cpp FunctionDAG.cpp Featurization.cpp SimpleLSTMModel.cpp TreeRepresentation.cpp State.cpp
 OBJECTS = $(SOURCES:.cpp=.o)
 DEPS = $(SOURCES:.cpp=.d)
 
