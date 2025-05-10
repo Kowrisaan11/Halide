@@ -3,43 +3,21 @@
 
 #include "CostModel.h"
 #include <filesystem>
-#include <chrono>
-
-namespace fs = std::filesystem;
+#include <iostream>
 
 namespace Halide {
-
-struct HardwareCorrectionFactors {
-    double base_correction;
-    double gpu_correction;
-    double scaling_factor;
-    double min_time_ms;
-    double high_threshold_ms;
-    double high_scaling;
-};
-
-struct CategoryCorrection {
-    double scale_factor;
-    double bias;
-    double confidence;
-    int sample_count;
-};
 
 class DefaultCostModel : public Internal::Autoscheduler::CostModel {
 private:
     void log_message(const std::string& message) {
-        std::stringstream ss;
-        auto now = std::chrono::system_clock::now();
-        std::time_t now_time = std::chrono::system_clock::to_time_t(now);
-        ss << "[" << "2025-05-10 18:07:06" << " UTC] " << message;
-        std::cout << ss.str() << std::endl;
+        std::cout << message << std::endl;
     }
+
     torch::jit::script::Module model;
     torch::Device device;
     json scaler_params;
     std::map<std::string, CategoryCorrection> category_calibration;
     const HardwareCorrectionFactors& correction_factors;
-    std::chrono::system_clock::time_point session_start;
     std::string user_login;
     
     // Queue for batch processing
@@ -52,17 +30,13 @@ public:
                     bool use_gpu);
     
     void set_pipeline_features(const Internal::Autoscheduler::FunctionDAG &dag) override;
-                             
     Internal::Autoscheduler::TreeRepresentation convert_to_tree(
         const Internal::Autoscheduler::FunctionDAG &dag) override;
-                                     
     void enqueue(const Internal::Autoscheduler::FunctionDAG &dag,
                 double *cost_ptr) override;
-                
     Internal::Autoscheduler::PredictionResult get_prediction(
         const Internal::Autoscheduler::TreeRepresentation &tree_repr,
         bool is_gpu_available) override;
-                                  
     void evaluate_costs() override;
     void reset() override;
 
@@ -79,9 +53,6 @@ private:
                             const std::string &category,
                             const std::map<std::string, double> &features);
     void initialize_default_calibrations();
-    void log_prediction_info(const std::string& category, 
-                           double raw_prediction, 
-                           double corrected_prediction);
 };
 
 }  // namespace Halide
