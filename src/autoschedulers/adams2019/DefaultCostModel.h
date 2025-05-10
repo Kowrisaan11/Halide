@@ -2,14 +2,13 @@
 #define DEFAULT_COST_MODEL_H
 
 #include "CostModel.h"
-#include <torch/script.h>
 #include <filesystem>
+#include <chrono>
 
 namespace fs = std::filesystem;
 
 namespace Halide {
 
-// Hardware-specific correction factors structure
 struct HardwareCorrectionFactors {
     double base_correction;
     double gpu_correction;
@@ -26,37 +25,38 @@ struct CategoryCorrection {
     int sample_count;
 };
 
-class DefaultCostModel : public CostModel {
+class DefaultCostModel : public Internal::Autoscheduler::CostModel {
 private:
     torch::jit::script::Module model;
     torch::Device device;
     json scaler_params;
-    std::map<std::string, std::pair<double, double>> file_calibration;
     std::map<std::string, CategoryCorrection> category_calibration;
     const HardwareCorrectionFactors& correction_factors;
     
-    // Queue for batch processing
-    std::vector<TreeRepresentation> queued_trees;
+    std::vector<Internal::Autoscheduler::TreeRepresentation> queued_trees;
     std::vector<double*> queued_cost_ptrs;
+    std::string user_login;
+    std::chrono::system_clock::time_point session_start;
 
 public:
     DefaultCostModel(const std::string &model_path,
                     const std::string &scaler_params_path,
-                    const std::string &calibration_path,
                     bool use_gpu);
-                    
+    
     void set_pipeline_features(const Internal::Autoscheduler::FunctionDAG &dag,
                              const Internal::Autoscheduler::Adams2019Params &params) override;
                              
-    TreeRepresentation convert_to_tree(const FunctionDAG &dag,
-                                     const Adams2019Params &params) override;
+    Internal::Autoscheduler::TreeRepresentation convert_to_tree(
+        const Internal::Autoscheduler::FunctionDAG &dag,
+        const Internal::Autoscheduler::Adams2019Params &params) override;
                                      
     void enqueue(const Internal::Autoscheduler::FunctionDAG &dag,
-                const StageMapOfScheduleFeatures &schedule_feats,
+                const Internal::Autoscheduler::StageMapOfScheduleFeatures &schedule_feats,
                 double *cost_ptr) override;
                 
-    PredictionResult get_prediction(const TreeRepresentation &tree_repr,
-                                  bool is_gpu_available) override;
+    Internal::Autoscheduler::PredictionResult get_prediction(
+        const Internal::Autoscheduler::TreeRepresentation &tree_repr,
+        bool is_gpu_available) override;
                                   
     void evaluate_costs() override;
     void reset() override;
@@ -68,17 +68,16 @@ protected:
     double compute_complexity_score(const std::map<std::string, double> &features) override;
 
 private:
-    // Helper methods
-    double get_raw_prediction(const torch::Tensor &seq_input, 
-                            const torch::Tensor &scalar_input);
+    torch::Tensor prepare_input_tensor(const std::map<std::string, double>& features);
+    double get_raw_prediction(const torch::Tensor &input_tensor);
     double correct_prediction(double raw_prediction,
-                            double actual_time,
                             bool is_gpu,
                             const std::string &category,
                             const std::map<std::string, double> &features);
-    void update_calibration(const std::string &category,
-                          double raw_prediction,
-                          double actual_time);
+    void initialize_default_calibrations();
+    void log_prediction_info(const std::string& category, 
+                           double raw_prediction, 
+                           double corrected_prediction);
 };
 
 }  // namespace Halide
