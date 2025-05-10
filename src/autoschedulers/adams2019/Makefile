@@ -1,77 +1,47 @@
-# Define paths
-THIS_MAKEFILE = $(realpath $(filter %Makefile, $(MAKEFILE_LIST)))
-SRC = $(strip $(shell dirname $(THIS_MAKEFILE)))
-HALIDE_SRC_ROOT = $(realpath $(SRC)/../../../)
-COMMON_DIR ?= $(realpath $(SRC)/../common/)
+# Minimal Makefile for adams2019 autoscheduler (no retraining tools)
 
-# Halide distribution path
+SRC_DIR := $(dir $(realpath $(lastword $(MAKEFILE_LIST))))
+HALIDE_SRC_ROOT := $(realpath $(SRC_DIR)/../../../)
 HALIDE_DISTRIB_PATH ?= $(HALIDE_SRC_ROOT)/distrib
 
-# Set up paths for includes
-CXXFLAGS += -I$(HALIDE_DISTRIB_PATH)/include \
+CXX      := g++
+CXXFLAGS := -std=c++17 -fPIC -O3 -Wall -Werror \
+            -I$(HALIDE_DISTRIB_PATH)/include \
             -I$(HALIDE_DISTRIB_PATH)/tools \
             -I$(HALIDE_SRC_ROOT)/src \
             -I$(HALIDE_SRC_ROOT)/tools \
-            -I$(COMMON_DIR) \
-            -std=c++17 \
-            -fPIC \
-            -Wall -Werror \
-            -Wno-unused-function \
-            -Wcast-qual \
-            -Wignored-qualifiers \
-            -Wno-comment \
-            -Wsign-compare \
-            -Wno-unknown-warning-option \
-            -O3
-	    -DHALIDE_EXPORT_SYMBOL="__attribute__((visibility(\"default\")))"
-# LibTorch configuration
-TORCH_DIR = /home/kowrisaan/fyp/libtorch
+            -I$(SRC_DIR)/../common \
+            -I$(SRC_DIR) \
+            -I/home/kowrisaan/fyp/libtorch/include \
+            -I/home/kowrisaan/fyp/libtorch/include/torch/csrc/api/include
 
-# Add LibTorch includes and flags
-CXXFLAGS += -I$(TORCH_DIR)/include \
-            -I$(TORCH_DIR)/include/torch/csrc/api/include
+LDFLAGS  := -shared -L/home/kowrisaan/fyp/libtorch/lib \
+            -ltorch -ltorch_cpu -lc10 \
+            -Wl,-rpath,/home/kowrisaan/fyp/libtorch/lib \
+            -L$(HALIDE_DISTRIB_PATH)/lib \
+            -lHalide -ldl -lpthread -lz
 
-# Library flags
-LDFLAGS += -L$(TORCH_DIR)/lib \
-           -ltorch -ltorch_cpu -lc10 \
-           -Wl,-rpath,$(TORCH_DIR)/lib \
-           -L$(HALIDE_DISTRIB_PATH)/lib \
-           -lHalide \
-           -ldl -lpthread -lz
-
-# Add CUDA support if available
-ifneq ($(wildcard $(TORCH_DIR)/lib/libtorch_cuda.so),)
+# Add CUDA if available
+ifneq ($(wildcard /home/kowrisaan/fyp/libtorch/lib/libtorch_cuda.so),)
     LDFLAGS += -ltorch_cuda -lcuda
     CXXFLAGS += -DTORCH_CUDA_AVAILABLE
 endif
 
-# Source files
-SRCS = AutoSchedule.cpp \
-       DefaultCostModel.cpp
-
-# Object files
+SRCS = AutoSchedule.cpp DefaultCostModel.cpp
 OBJS = $(SRCS:%.cpp=bin/%.o)
 
 .PHONY: all clean
 
 all: bin/libautoschedule_adams2019.so
 
-# Create directories
 bin:
 	mkdir -p bin
 
-# Compile source files
-bin/%.o: $(SRC)/%.cpp | bin
+bin/%.o: %.cpp | bin
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
-# Link the shared library
 bin/libautoschedule_adams2019.so: $(OBJS)
-	$(CXX) -shared $(CXXFLAGS) $(OBJS) -o $@ $(LDFLAGS)
+	$(CXX) $(CXXFLAGS) $(OBJS) $(LDFLAGS) -o $@
 
-# Install the autoscheduler
-install: bin/libautoschedule_adams2019.so
-	cp $< $(HALIDE_DISTRIB_PATH)/lib/
-
-# Clean target
 clean:
 	rm -rf bin
