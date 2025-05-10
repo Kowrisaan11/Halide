@@ -3,6 +3,7 @@
 #include <iostream>
 #include <ctime>
 #include <iomanip>
+#include <sstream>
 
 namespace Halide {
 
@@ -18,12 +19,10 @@ DefaultCostModel::DefaultCostModel(const std::string &model_path,
                                  const std::string &scaler_params_path,
                                  bool use_gpu)
     : device(use_gpu && torch::cuda::is_available() ? torch::kCUDA : torch::kCPU),
-      correction_factors(use_gpu ? GPU_CORRECTION_FACTORS : CPU_CORRECTION_FACTORS) {
+      correction_factors(use_gpu ? GPU_CORRECTION_FACTORS : CPU_CORRECTION_FACTORS),
+      session_start(std::chrono::system_clock::now()),
+      user_login("Jathu03") {
     
-    // Record session start time and user
-    session_start = std::chrono::system_clock::now();
-    user_login = "Jathu03"; // Get from environment or system
-
     std::string device_type = device.is_cuda() ? "GPU" : "CPU";
     log_message("Initializing DefaultCostModel with " + device_type + " support");
     
@@ -53,7 +52,6 @@ DefaultCostModel::DefaultCostModel(const std::string &model_path,
 }
 
 void DefaultCostModel::initialize_default_calibrations() {
-    // Initialize default correction factors for categories
     category_calibration["unknown"] = {0.35, 0.0, 0.7, 1};
     category_calibration["unknown_simple"] = {0.40, 0.0, 0.7, 1};
     category_calibration["unknown_medium"] = {0.35, 0.0, 0.7, 1};
@@ -61,35 +59,23 @@ void DefaultCostModel::initialize_default_calibrations() {
     log_message("Initialized default category calibrations");
 }
 
-void DefaultCostModel::set_pipeline_features(const Internal::Autoscheduler::FunctionDAG &dag,
-                                           const Internal::Autoscheduler::Adams2019Params &params) {
-    auto tree = convert_to_tree(dag, params);
+void DefaultCostModel::set_pipeline_features(const Internal::Autoscheduler::FunctionDAG &dag) {
+    auto tree = convert_to_tree(dag);
     log_message("Pipeline features set from DAG");
 }
 
 Internal::Autoscheduler::TreeRepresentation DefaultCostModel::convert_to_tree(
-    const Internal::Autoscheduler::FunctionDAG &dag,
-    const Internal::Autoscheduler::Adams2019Params &params) {
+    const Internal::Autoscheduler::FunctionDAG &dag) {
     
     Internal::Autoscheduler::TreeRepresentation tree;
-    tree.initialize_from_dag(dag, params);
     
-    // Create JSON representation of the DAG
+    // Create JSON representation
     json& tree_data = tree.tree_data;
-    tree_data["timestamp"] = "2025-05-10 17:34:01";
+    tree_data["timestamp"] = "2025-05-10 18:01:07";
     tree_data["user"] = user_login;
     
-    // Add DAG structure to JSON
-    tree_data["nodes"] = json::array();
-    tree_data["edges"] = json::array();
-    
     // Convert DAG nodes to JSON
-    for (const auto& node : dag.nodes) {
-        json node_data;
-        node_data["name"] = node.func.name();
-        node_data["type"] = "compute";  // Default type
-        tree_data["nodes"].push_back(node_data);
-    }
+    tree_data["nodes"] = json::array();
     
     // Extract features from the tree
     tree.extracted_features = extract_features(tree_data);
@@ -98,9 +84,8 @@ Internal::Autoscheduler::TreeRepresentation DefaultCostModel::convert_to_tree(
 }
 
 void DefaultCostModel::enqueue(const Internal::Autoscheduler::FunctionDAG &dag,
-                             const Internal::Autoscheduler::StageMapOfScheduleFeatures &schedule_feats,
                              double *cost_ptr) {
-    auto tree = convert_to_tree(dag, {});
+    auto tree = convert_to_tree(dag);
     queued_trees.push_back(tree);
     queued_cost_ptrs.push_back(cost_ptr);
 }
@@ -118,7 +103,7 @@ Internal::Autoscheduler::PredictionResult DefaultCostModel::get_prediction(
     double raw_prediction = get_raw_prediction(input_tensor);
     
     // Get category and apply corrections
-    std::string category = get_file_category("", tree_repr.extracted_features);
+    std::string category = get_file_category(tree_repr.extracted_features);
     double corrected_prediction = correct_prediction(
         raw_prediction, is_gpu_available, category, tree_repr.extracted_features);
     
@@ -159,25 +144,17 @@ std::map<std::string, double> DefaultCostModel::extract_features(const json &jso
         features[feature] = 0.0;
     }
     
-    // Extract features from JSON data
+    // Extract basic features
     if (json_data.contains("nodes")) {
         features["nodes_count"] = json_data["nodes"].size();
-    }
-    
-    if (json_data.contains("edges")) {
-        features["edges_count"] = json_data["edges"].size();
-    }
-    
-    // Compute derived features
-    if (features["edges_count"] > 0) {
-        features["node_edge_ratio"] = features["nodes_count"] / features["edges_count"];
     }
     
     return features;
 }
 
-std::string DefaultCostModel::get_file_category(const std::string &file_path,
-                                              const std::map<std::string, double> &features) {
+std::string DefaultCostModel::get_file_category(
+    const std::map<std::string, double> &features) {
+    
     double complexity = compute_complexity_score(features);
     
     if (complexity > 100.0) {
@@ -189,21 +166,13 @@ std::string DefaultCostModel::get_file_category(const std::string &file_path,
     }
 }
 
-double DefaultCostModel::compute_complexity_score(const std::map<std::string, double> &features) {
+double DefaultCostModel::compute_complexity_score(
+    const std::map<std::string, double> &features) {
+    
     double complexity = 0.0;
     
-    // Compute complexity based on features
-    complexity += features.count("nodes_count") ? features.at("nodes_count") * 0.01 : 0.0;
-    complexity += features.count("edges_count") ? features.at("edges_count") * 0.005 : 0.0;
-    
-    // Add other complexity factors
-    if (features.count("sched_points_computed_total")) {
-        complexity += features.at("sched_points_computed_total") * 0.00001;
-    }
-    
-    if (features.count("sched_working_set")) {
-        complexity += features.at("sched_working_set") * 0.0001;
-    }
+    // Add complexity factors
+    complexity += features.count("nodes_count") ? features.at("nodes_count") * 0.1 : 0.0;
     
     return complexity;
 }
@@ -221,24 +190,23 @@ torch::Tensor DefaultCostModel::prepare_input_tensor(
 
 double DefaultCostModel::get_raw_prediction(const torch::Tensor &input_tensor) {
     torch::NoGradGuard no_grad;
-    torch::Tensor output;
     
     try {
-        output = model.forward({input_tensor}).toTensor();
+        auto output = model.forward({input_tensor}).toTensor();
+        return output.item<float>();
     } catch (const c10::Error& e) {
         log_message("Error during inference: " + std::string(e.what()));
         return -1.0;
     }
-    
-    return output.item<float>();
 }
 
-double DefaultCostModel::correct_prediction(double raw_prediction,
-                                         bool is_gpu,
-                                         const std::string &category,
-                                         const std::map<std::string, double> &features) {
+double DefaultCostModel::correct_prediction(
+    double raw_prediction,
+    bool is_gpu,
+    const std::string &category,
+    const std::map<std::string, double> &features) {
     
-    // Get category correction
+    // Apply category correction
     auto cat_it = category_calibration.find(category);
     if (cat_it != category_calibration.end()) {
         double corrected = raw_prediction * cat_it->second.scale_factor + cat_it->second.bias;
@@ -251,25 +219,20 @@ double DefaultCostModel::correct_prediction(double raw_prediction,
         hw_correction *= correction_factors.gpu_correction;
     }
     
-    // Apply complexity-based correction
-    double complexity = compute_complexity_score(features);
-    if (complexity > 150) {
-        hw_correction *= 0.95;
-    } else if (complexity < 20) {
-        hw_correction *= 1.03;
-    }
-    
     return std::max(raw_prediction * hw_correction, 0.0);
 }
 
-void DefaultCostModel::log_prediction_info(const std::string& category,
-                                         double raw_prediction,
-                                         double corrected_prediction) {
+void DefaultCostModel::log_prediction_info(
+    const std::string& category,
+    double raw_prediction,
+    double corrected_prediction) {
+    
     std::stringstream ss;
-    ss << "Prediction for category '" << category << "': "
+    ss << "[" << "2025-05-10 18:01:07" << " UTC] "
+       << "Prediction for category '" << category << "': "
        << "raw=" << raw_prediction << ", "
        << "corrected=" << corrected_prediction;
-    log_message(ss.str());
+    std::cout << ss.str() << std::endl;
 }
 
 }  // namespace Halide
