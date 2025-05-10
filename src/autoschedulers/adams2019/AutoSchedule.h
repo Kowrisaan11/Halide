@@ -5,7 +5,6 @@
 #include <vector>
 #include <iostream>
 #include "Halide.h"
-#include "AutoSchedule.h"
 #include "CostModel.h"
 #include "DefaultCostModel.h"
 #include <nlohmann/json.hpp>
@@ -16,14 +15,10 @@ namespace Autoscheduler {
 
 using json = nlohmann::json;
 
-// Forward declarations
-class AutoScheduler;
-struct AutoSchedulerRegistry;
-
 class AutoScheduler {
 private:
     CostModel* cost_model{nullptr};
-    const std::string current_time{"2025-05-10 18:58:47"};
+    const std::string current_time{"2025-05-10 19:20:58"};
     const std::string user_login{"Jathu03"};
     
     struct MetaData {
@@ -33,7 +28,10 @@ private:
         std::string device_type;
     } metadata;
 
-    void log_message(const std::string& message) const;
+    void log_message(const std::string& message) const {
+        std::cout << "[" << current_time << " UTC] " << message << std::endl;
+    }
+
     json create_dag_representation(const Pipeline& pipeline);
     void apply_schedule(const Pipeline& pipeline, const json& schedule_data);
 
@@ -43,6 +41,15 @@ public:
                  bool use_gpu = false);
     ~AutoScheduler();
 
+    void operator()(const Pipeline& pipeline,
+                   const Target& target,
+                   const AutoschedulerParams& params,
+                   AutoSchedulerResults* results);
+};
+
+// Define the registry class
+class Adams2019Autoscheduler {
+public:
     void operator()(const Pipeline& pipeline,
                    const Target& target,
                    const AutoschedulerParams& params,
