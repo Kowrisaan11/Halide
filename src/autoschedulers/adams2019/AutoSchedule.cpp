@@ -1,12 +1,26 @@
 #include "AutoSchedule.h"
+#include <iostream>
+#include <string>
+#include <vector>
+#include "Halide.h"
+// Assuming nlohmann/json is included via AutoSchedule.h or directly
+// #include <nlohmann/json.hpp>
 
 namespace Halide {
 namespace Internal {
 namespace Autoscheduler {
 
-AutoScheduler::AutoScheduler(const std::string& model_path,
-                           const std::string& scaler_params_path,
-                           bool use_gpu) {
+using std::string;
+using std::vector;
+using json = nlohmann::json;
+
+// Assuming these are defined in AutoSchedule.h or elsewhere
+extern string current_time; // Global variable for timestamp
+extern string user_login;   // Global variable for user login
+
+AutoScheduler::AutoScheduler(const string& model_path,
+                             const string& scaler_params_path,
+                             bool use_gpu) {
     metadata.gpu_available = use_gpu;
     metadata.timestamp = current_time;
     metadata.user = user_login;
@@ -22,14 +36,14 @@ AutoScheduler::~AutoScheduler() {
     }
 }
 
-void AutoScheduler::log_message(const std::string& message) const {
+void AutoScheduler::log_message(const string& message) const {
     std::cout << "[" << current_time << " UTC] " << message << std::endl;
 }
 
 void AutoScheduler::operator()(const Pipeline& pipeline,
-                             const Target& target,
-                             const AutoschedulerParams& params,
-                             AutoSchedulerResults* results) {
+                              const Target& target,
+                              const AutoschedulerParams& params,
+                              AutoSchedulerResults* results) {
     log_message("Starting autoscheduling process with " + metadata.device_type);
 
     json dag_data = create_dag_representation(pipeline);
@@ -67,7 +81,7 @@ json AutoScheduler::create_dag_representation(const Pipeline& pipeline) {
     json dag_data;
     dag_data["nodes"] = json::array();
     
-    std::vector<Func> outputs = pipeline.outputs();
+    vector<Func> outputs = pipeline.outputs();
     for (const auto& func : outputs) {
         json node;
         node["name"] = func.name();
@@ -98,19 +112,19 @@ void AutoScheduler::apply_schedule(const Pipeline& pipeline, const json& schedul
         }
         log_message("Schedule applied successfully");
     } catch (const Error& e) {
-        log_message("Error applying schedule: " + std::string(e.what()));
+        log_message("Error applying schedule: " + string(e.what()));
         throw;
     }
 }
 
 void AutoSchedulerRegistry::operator()(const Pipeline& pipeline,
-                                     const Target& target,
-                                     const AutoschedulerParams& params,
-                                     AutoSchedulerResults* results) {
+                                      const Target& target,
+                                      const AutoschedulerParams& params,
+                                      AutoSchedulerResults* results) {
     if (params.name != "adams2019") return;
     
-    std::string model_path = "model.pt";
-    std::string scaler_params_path = "scaler_params.json";
+    string model_path = "model.pt";
+    string scaler_params_path = "scaler_params.json";
     bool use_gpu = target.has_gpu_feature();
     
     AutoScheduler scheduler(model_path, scaler_params_path, use_gpu);
@@ -118,7 +132,7 @@ void AutoSchedulerRegistry::operator()(const Pipeline& pipeline,
 }
 
 // Register the autoscheduler
-REGISTER_AUTOSCHEDULER(AutoSchedulerRegistry)
+REGISTER_AUTOSCHEDULER(AutoSchedulerRegistry);
 
 }  // namespace Autoscheduler
 }  // namespace Internal
