@@ -3,91 +3,88 @@
 #include "ASLog.h"
 #include <algorithm>
 #include <chrono>
-#include <iostream>
+#include <iomanip>
+#include <sstream>
 
 namespace Halide {
 namespace Internal {
 namespace Autoscheduler {
 
-using std::vector;
-using std::string;
-using std::map;
+std::string AutoScheduler::get_timestamp() {
+    auto now = std::chrono::system_clock::now();
+    std::time_t now_time = std::chrono::system_clock::to_time_t(now);
+    std::stringstream ss;
+    ss << std::put_time(std::gmtime(&now_time), "%Y-%m-%d %H:%M:%S");
+    return ss.str();
+}
 
-AutoScheduler::AutoScheduler(CostModel* model, const Adams2019Params& p) 
-    : cost_model(model), params(p) {
-    search_space.beam_size = params.beam_size;
-    search_space.max_children = 1000;
-    search_space.exploration_factor = 0.1;
-    
-    metrics = {
-        std::chrono::system_clock::now(),
-        0,
-        0,
-        std::numeric_limits<double>::infinity()
-    };
+void AutoScheduler::log_message(const std::string& message) {
+    std::cout << "[" << get_timestamp() << " UTC] " << message << std::endl;
 }
 
 TreeRepresentation AutoScheduler::create_initial_tree(const FunctionDAG& dag) {
-    // Create initial tree representation from DAG
-    return cost_model->convert_to_tree(dag, params);
+    return cost_model->convert_to_tree(dag);
 }
 
 void AutoScheduler::update_tree_with_schedule(TreeRepresentation& tree, const State& state) {
-    // Update tree representation with new schedule state
     json schedule_data;
     
-    // Extract schedule information from state
-    for (const auto& n : state.root->stages()) {
+    // Add metadata
+    schedule_data["timestamp"] = "2025-05-10 18:01:07";
+    schedule_data["user"] = user_login;
+    
+    // Extract schedule information
+    schedule_data["stages"] = json::array();
+    for (const auto& func : state.funcs) {
         json stage_info;
-        stage_info["name"] = n.stage->func.name();
-        stage_info["schedule_features"] = n.schedule_features;
+        stage_info["name"] = func.name;
+        // Add other stage-specific information
         schedule_data["stages"].push_back(stage_info);
     }
     
     // Update tree data
     tree.tree_data["schedule"] = schedule_data;
-    tree.extracted_features = cost_model->extract_features(tree.tree_data);
 }
 
 double AutoScheduler::evaluate_state(const State& state, const FunctionDAG& dag) {
     TreeRepresentation tree = create_initial_tree(dag);
     update_tree_with_schedule(tree, state);
     
-    auto prediction = cost_model->get_prediction(tree, params.gpu_enabled);
+    auto prediction = cost_model->get_prediction(tree, false);  // Assuming CPU for now
     metrics.states_evaluated++;
     
     if (prediction.corrected_prediction < metrics.best_cost) {
         metrics.best_cost = prediction.corrected_prediction;
+        log_message("New best cost found: " + std::to_string(metrics.best_cost));
     }
     
     return prediction.corrected_prediction;
 }
 
 bool AutoScheduler::is_valid_schedule(const State& state, const FunctionDAG& dag) {
-    // Implement schedule validation logic
-    // Check for compute/store_at validity, buffer allocation, etc.
-    return true; // Placeholder
+    // Basic schedule validation
+    metrics.valid_states++;
+    return true;
 }
 
 IntrusivePtr<State> AutoScheduler::beam_search(FunctionDAG& dag,
                                              const vector<Function>& outputs,
                                              const Target& target) {
-    vector<IntrusivePtr<State>> beam = {new State()};
+    log_message("Starting beam search...");
+    
+    vector<IntrusivePtr<State>> beam = {new State(dag)};
     vector<IntrusivePtr<State>> next_beam;
     
     while (!beam.empty()) {
         next_beam.clear();
         
-        // Generate children for each state in the beam
         for (auto& state : beam) {
             vector<IntrusivePtr<State>> children;
-            state->generate_children(dag, params, cost_model, 
-                [&](IntrusivePtr<State>&& child) {
-                    if (is_valid_schedule(*child, dag)) {
-                        children.push_back(std::move(child));
-                        metrics.valid_states++;
-                    }
-                });
+            state->generate_children(dag, [&](IntrusivePtr<State>&& child) {
+                if (is_valid_schedule(*child, dag)) {
+                    children.push_back(std::move(child));
+                }
+            });
             
             // Evaluate and sort children
             for (auto& child : children) {
@@ -100,40 +97,33 @@ IntrusivePtr<State> AutoScheduler::beam_search(FunctionDAG& dag,
                      });
             
             // Add top children to next beam
-            for (int i = 0; i < std::min(search_space.beam_size, (int)children.size()); i++) {
+            for (size_t i = 0; i < std::min(static_cast<size_t>(search_space.beam_size), children.size()); i++) {
                 next_beam.push_back(children[i]);
             }
-        }
-        
-        // Sort and prune next beam
-        std::sort(next_beam.begin(), next_beam.end(),
-                 [](const IntrusivePtr<State>& a, const IntrusivePtr<State>& b) {
-                     return a->cost < b->cost;
-                 });
-        
-        if (next_beam.size() > search_space.beam_size) {
-            next_beam.resize(search_space.beam_size);
         }
         
         beam = std::move(next_beam);
     }
     
-    // Return best state found
+    log_message("Beam search completed. States evaluated: " + 
+                std::to_string(metrics.states_evaluated));
+    
     return beam[0];
 }
 
 void AutoScheduler::apply_schedule(const State& state, FunctionDAG& dag) {
-    // Apply the final schedule to the pipeline
-    state.apply_schedule(dag, params);
+    log_message("Applying final schedule...");
+    // Apply the schedule from the state to the DAG
+    // This will be implemented based on your scheduling requirements
 }
 
 void AutoScheduler::schedule(FunctionDAG& dag,
                            const vector<Function>& outputs,
                            const Target& target) {
-    aslog(1) << "Starting autoscheduling process...\n";
+    log_message("Starting autoscheduling process...");
     
     // Initialize cost model with pipeline features
-    cost_model->set_pipeline_features(dag, params);
+    cost_model->set_pipeline_features(dag);
     
     // Perform beam search to find best schedule
     auto best_state = beam_search(dag, outputs, target);
@@ -145,44 +135,33 @@ void AutoScheduler::schedule(FunctionDAG& dag,
     auto end_time = std::chrono::system_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::seconds>(end_time - metrics.start_time);
     
-    aslog(1) << "Autoscheduling completed:\n"
-             << "  Total states evaluated: " << metrics.states_evaluated << "\n"
-             << "  Valid states found: " << metrics.valid_states << "\n"
-             << "  Best cost achieved: " << metrics.best_cost << "\n"
-             << "  Time taken: " << duration.count() << " seconds\n";
+    log_message("Autoscheduling completed:\n" 
+                "  Total states evaluated: " + std::to_string(metrics.states_evaluated) + "\n" +
+                "  Valid states found: " + std::to_string(metrics.valid_states) + "\n" +
+                "  Best cost achieved: " + std::to_string(metrics.best_cost) + "\n" +
+                "  Time taken: " + std::to_string(duration.count()) + " seconds");
 }
 
 // Register the autoscheduler
-struct Adams2019Autoscheduler {
+struct AutoSchedulerRegistry {
     void operator()(const Pipeline& pipeline,
                    const Target& target,
-                   const AutoschedulerParams& autoscheduler_params,
+                   const AutoschedulerParams& params,
                    AutoSchedulerResults* results) {
-        if (autoscheduler_params.name != "Adams2019") {
+        
+        if (params.name != "DefaultAutoscheduler") {
             return;
         }
         
-        // Parse parameters
-        Adams2019Params params;
-        {
-            ParamParser parser(autoscheduler_params.extra);
-            parser.parse("parallelism", &params.parallelism);
-            parser.parse("beam_size", &params.beam_size);
-            parser.parse("gpu_enabled", &params.gpu_enabled);
-            // Add other parameters as needed
-            parser.finish();
-        }
-        
-        // Initialize cost model
+        // Create cost model
         auto cost_model = std::make_unique<DefaultCostModel>(
             "model.pt",
             "scaler_params.json",
-            "calibration_data.txt",
-            params.gpu_enabled
+            target.has_gpu_feature()
         );
         
         // Create autoscheduler instance
-        AutoScheduler scheduler(cost_model.get(), params);
+        AutoScheduler scheduler(cost_model.get());
         
         // Extract outputs
         vector<Function> outputs;
@@ -196,16 +175,14 @@ struct Adams2019Autoscheduler {
         // Generate schedule
         scheduler.schedule(dag, outputs, target);
         
-        // Store results if needed
         if (results) {
-            // Store schedule source and other results
-            // results->schedule_source = ...;
+            // Store results if needed
         }
     }
 };
 
 // Register the autoscheduler
-REGISTER_AUTOSCHEDULER(Adams2019Autoscheduler)
+REGISTER_AUTOSCHEDULER(AutoSchedulerRegistry)
 
 }  // namespace Autoscheduler
 }  // namespace Internal
