@@ -2,74 +2,85 @@
 #define DEFAULT_COST_MODEL_H
 
 #include "CostModel.h"
-#include "Weights.h"
-#include <string>
+#include <torch/script.h>
+#include <filesystem>
+
+namespace fs = std::filesystem;
 
 namespace Halide {
 
-namespace Internal {
-namespace Autoscheduler {
-struct Adams2019Params;
-}  // namespace Autoscheduler
-}  // namespace Internal
+// Hardware-specific correction factors structure
+struct HardwareCorrectionFactors {
+    double base_correction;
+    double gpu_correction;
+    double scaling_factor;
+    double min_time_ms;
+    double high_threshold_ms;
+    double high_scaling;
+};
+
+struct CategoryCorrection {
+    double scale_factor;
+    double bias;
+    double confidence;
+    int sample_count;
+};
 
 class DefaultCostModel : public CostModel {
 private:
-    Internal::Weights weights;
-    Runtime::Buffer<float> schedule_feat_queue, pipeline_feat_queue, costs;
-    Runtime::Buffer<double *> cost_ptrs;
-    int cursor, num_stages, num_cores;
-
-    const std::string weights_in_path, weights_out_path;
-    const bool randomize_weights;
-
-    Runtime::Buffer<float>
-        head1_filter_update, head1_bias_update,
-        head2_filter_update, head2_bias_update,
-        conv1_filter_update, conv1_bias_update;
-    int timestep = 0;
+    torch::jit::script::Module model;
+    torch::Device device;
+    json scaler_params;
+    std::map<std::string, std::pair<double, double>> file_calibration;
+    std::map<std::string, CategoryCorrection> category_calibration;
+    const HardwareCorrectionFactors& correction_factors;
+    
+    // Queue for batch processing
+    std::vector<TreeRepresentation> queued_trees;
+    std::vector<double*> queued_cost_ptrs;
 
 public:
-    DefaultCostModel(const std::string &weights_in_path,
-                     const std::string &weights_out_path,
-                     bool randomize_weights)
-        : weights_in_path(weights_in_path),
-          weights_out_path(weights_out_path),
-          randomize_weights(randomize_weights) {
-
-        load_weights();
-    }
-    ~DefaultCostModel() override = default;
-
-    // Configure the cost model for the algorithm to be scheduled.
+    DefaultCostModel(const std::string &model_path,
+                    const std::string &scaler_params_path,
+                    const std::string &calibration_path,
+                    bool use_gpu);
+                    
     void set_pipeline_features(const Internal::Autoscheduler::FunctionDAG &dag,
-                               const Internal::Autoscheduler::Adams2019Params &params) override;
-    void set_pipeline_features(const Runtime::Buffer<float> &, int n);
-
-    // Enqueue a schedule to be evaluated. The second version of this method returns a buffer of
-    // schedule_features that should be filled in by the caller.
+                             const Internal::Autoscheduler::Adams2019Params &params) override;
+                             
+    TreeRepresentation convert_to_tree(const FunctionDAG &dag,
+                                     const Adams2019Params &params) override;
+                                     
     void enqueue(const Internal::Autoscheduler::FunctionDAG &dag,
-                 const Halide::Internal::Autoscheduler::StageMapOfScheduleFeatures &schedule_feats,
-                 double *cost_ptr) override;
-    void enqueue(int ns, Runtime::Buffer<float> *schedule_feats, double *cost_ptr);
-
-    // Evaluate all schedules in the queue.
+                const StageMapOfScheduleFeatures &schedule_feats,
+                double *cost_ptr) override;
+                
+    PredictionResult get_prediction(const TreeRepresentation &tree_repr,
+                                  bool is_gpu_available) override;
+                                  
     void evaluate_costs() override;
-
-    // Discard all schedules in the queue.
     void reset() override;
 
-    // Update model weights using true measured runtimes.
-    float backprop(const Runtime::Buffer<const float> &true_runtimes, float learning_rate);
+protected:
+    std::map<std::string, double> extract_features(const json &json_data) override;
+    std::string get_file_category(const std::string &file_path, 
+                                const std::map<std::string, double> &features) override;
+    double compute_complexity_score(const std::map<std::string, double> &features) override;
 
-    // Save/Load the model weights to/from disk.
-    void save_weights();
-    void load_weights();
+private:
+    // Helper methods
+    double get_raw_prediction(const torch::Tensor &seq_input, 
+                            const torch::Tensor &scalar_input);
+    double correct_prediction(double raw_prediction,
+                            double actual_time,
+                            bool is_gpu,
+                            const std::string &category,
+                            const std::map<std::string, double> &features);
+    void update_calibration(const std::string &category,
+                          double raw_prediction,
+                          double actual_time);
 };
 
-std::unique_ptr<DefaultCostModel> make_default_cost_model(const std::string &weights_in_dir = "",
-                                                          const std::string &weights_out_dir = "",
-                                                          bool randomize_weights = false);
 }  // namespace Halide
 
 #endif  // DEFAULT_COST_MODEL_H
