@@ -2,83 +2,76 @@
 #define COST_MODEL_H
 
 #include <string>
-
-#include "Featurization.h"
+#include <vector>
+#include <map>
+#include <nlohmann/json.hpp>
 #include "FunctionDAG.h"
-#include "HalideBuffer.h"
-#include "PerfectHashMap.h"
 
-// An abstract base class for a cost model.
+using json = nlohmann::json;
+
 namespace Halide {
 
 namespace Internal {
 namespace Autoscheduler {
 
-typedef PerfectHashMap<FunctionDAG::Node::Stage, ScheduleFeatures> StageMapOfScheduleFeatures;
-
-struct Adams2019Params {
-    /** Maximum level of parallelism available. */
-    int parallelism = 16;
-
-    /** Beam size to use in the beam search. Defaults to 32. Use 1 to get a greedy search instead.
-     * Formerly HL_BEAM_SIZE */
-    int beam_size = 32;
-
-    /** percent chance of accepting each state in the beam.
-     * Normalized by the number of decisions made, so 5 would be there's a 5 percent chance of never rejecting any states.
-     * Formerly HL_RANDOM_DROPOUT */
-    int random_dropout = 100;
-
-    /** Random seed used by the random dropout. If 0, use time().
-     * Formerly HL_SEED */
-    int random_dropout_seed = 0;
-
-    /** When training or schedule, read weights from this directory or file.
-     * (If path ends in `.weights` it is written as a single file, otherwise a directory of files.)
-     * Formerly HL_WEIGHTS_DIR */
-    std::string weights_path;
-
-    /** If set to nonzero value: limits the search space to that of Mullapudi et al.
-     * Formerly HL_NO_SUBTILING */
-    int disable_subtiling = 0;
-
-    /** If set to nonzero value: features of possible schedules are always recalculated, and are not cached across passes.
-     * Formerly HL_DISABLE_MEMOIZED_FEATURES */
-    int disable_memoized_features = 0;
-
-    /** If set to nonzero value: tiling sizes are not cached across passes.
-     * Formerly HL_DISABLE_MEMOIZED_BLOCKS */
-    int disable_memoized_blocks = 0;
-
-    /** If >= 0, only consider schedules that allocate at most this much memory (measured in bytes).
-     * Formerly HL_AUTOSCHEDULE_MEMORY_LIMIT */
-    int64_t memory_limit = -1;
+// Define FIXED_FEATURES here since it's needed across implementations
+const std::vector<std::string> FIXED_FEATURES = {
+    "cache_hits", "cache_misses", "execution_time_ms", "sched_num_realizations",
+    // ... (rest of your FIXED_FEATURES)
 };
 
-}  // namespace Autoscheduler
-}  // namespace Internal
+struct TreeRepresentation {
+    json tree_data;
+    std::map<std::string, double> extracted_features;
+    
+    // Constructor to initialize from FunctionDAG
+    TreeRepresentation(const FunctionDAG &dag, const Adams2019Params &params);
+};
+
+struct PredictionResult {
+    double raw_prediction;
+    double corrected_prediction;
+    std::string category;
+    std::map<std::string, double> features;
+};
 
 class CostModel {
 public:
     virtual ~CostModel() = default;
 
-    // Configure the cost model for the algorithm to be scheduled.
+    // Configure the cost model for the algorithm to be scheduled
     virtual void set_pipeline_features(const Internal::Autoscheduler::FunctionDAG &dag,
-                                       const Internal::Autoscheduler::Adams2019Params &params) = 0;
+                                     const Internal::Autoscheduler::Adams2019Params &params) = 0;
 
-    // Enqueue a schedule to be evaluated. Will annotate the value located at cost_ptr when the evaluation takes place.
-    // Note that the dag argument should correspond to the dag specified previously when calling set_pipeline_features.
+    // Convert FunctionDAG to tree representation
+    virtual TreeRepresentation convert_to_tree(const FunctionDAG &dag,
+                                             const Adams2019Params &params) = 0;
+
+    // Enqueue a schedule to be evaluated
     virtual void enqueue(const Internal::Autoscheduler::FunctionDAG &dag,
-                         const Halide::Internal::Autoscheduler::StageMapOfScheduleFeatures &schedule_feats,
-                         double *cost_ptr) = 0;
+                        const StageMapOfScheduleFeatures &schedule_feats,
+                        double *cost_ptr) = 0;
 
-    // Evaluate all schedules in the queue.
+    // Get prediction for a specific tree representation
+    virtual PredictionResult get_prediction(const TreeRepresentation &tree_repr,
+                                          bool is_gpu_available) = 0;
+
+    // Evaluate all schedules in the queue
     virtual void evaluate_costs() = 0;
 
-    // Discard all schedules in the queue.
+    // Discard all schedules in the queue
     virtual void reset() = 0;
+
+protected:
+    // Utility functions that might be useful for implementations
+    virtual std::map<std::string, double> extract_features(const json &json_data) = 0;
+    virtual std::string get_file_category(const std::string &file_path, 
+                                        const std::map<std::string, double> &features) = 0;
+    virtual double compute_complexity_score(const std::map<std::string, double> &features) = 0;
 };
 
+}  // namespace Autoscheduler
+}  // namespace Internal
 }  // namespace Halide
 
 #endif  // COST_MODEL_H
