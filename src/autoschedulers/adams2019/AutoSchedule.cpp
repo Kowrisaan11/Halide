@@ -5,6 +5,7 @@
 #include <chrono>
 #include <iomanip>
 #include <sstream>
+#include "Adams2019Params.h" 
 
 namespace Halide {
 namespace Internal {
