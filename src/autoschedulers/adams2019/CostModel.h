@@ -5,7 +5,6 @@
 #include <vector>
 #include <map>
 #include <nlohmann/json.hpp>
-#include "FunctionDAG.h"
 #include <torch/torch.h>
 #include <torch/script.h>
 
@@ -15,19 +14,9 @@ namespace Halide {
 namespace Internal {
 namespace Autoscheduler {
 
-// Define FIXED_FEATURES for your model
-const std::vector<std::string> FIXED_FEATURES = {
-    "cache_hits", "cache_misses", "execution_time_ms", "sched_num_realizations",
-    // ... (your FIXED_FEATURES list)
-};
-
 struct TreeRepresentation {
     json tree_data;
     std::map<std::string, double> extracted_features;
-    
-    TreeRepresentation() = default;
-    TreeRepresentation(const FunctionDAG &dag);
-    void initialize_from_dag(const FunctionDAG &dag);
 };
 
 struct PredictionResult {
@@ -40,24 +29,10 @@ struct PredictionResult {
 class CostModel {
 public:
     virtual ~CostModel() = default;
-
-    // Configure the cost model for the algorithm to be scheduled
-    virtual void set_pipeline_features(const FunctionDAG &dag) = 0;
-
-    // Convert FunctionDAG to tree representation
-    virtual TreeRepresentation convert_to_tree(const FunctionDAG &dag) = 0;
-
-    // Enqueue a DAG for evaluation
-    virtual void enqueue(const FunctionDAG &dag, double *cost_ptr) = 0;
-
-    // Get prediction for a specific tree representation
+    virtual void enqueue(const json &dag_data, double *cost_ptr) = 0;
     virtual PredictionResult get_prediction(const TreeRepresentation &tree_repr,
                                           bool is_gpu_available) = 0;
-
-    // Evaluate all DAGs in the queue
     virtual void evaluate_costs() = 0;
-
-    // Discard all DAGs in the queue
     virtual void reset() = 0;
 
 protected:
