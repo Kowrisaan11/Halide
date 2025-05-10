@@ -2,25 +2,34 @@
 #define DEFAULT_COST_MODEL_H
 
 #include "CostModel.h"
-#include <filesystem>
 #include <iostream>
 
 namespace Halide {
 
+struct HardwareCorrectionFactors {
+    double base_correction;
+    double gpu_correction;
+    double scaling_factor;
+    double min_time_ms;
+};
+
+struct CategoryCorrection {
+    double scale_factor;
+    double bias;
+    double confidence;
+    int sample_count;
+};
+
 class DefaultCostModel : public Internal::Autoscheduler::CostModel {
 private:
-    void log_message(const std::string& message) {
-        std::cout << message << std::endl;
-    }
-
     torch::jit::script::Module model;
     torch::Device device;
     json scaler_params;
     std::map<std::string, CategoryCorrection> category_calibration;
     const HardwareCorrectionFactors& correction_factors;
-    std::string user_login;
+    const std::string timestamp{"2025-05-10 18:30:44"};
+    const std::string user_login{"Jathu03"};
     
-    // Queue for batch processing
     std::vector<Internal::Autoscheduler::TreeRepresentation> queued_trees;
     std::vector<double*> queued_cost_ptrs;
 
@@ -29,11 +38,7 @@ public:
                     const std::string &scaler_params_path,
                     bool use_gpu);
     
-    void set_pipeline_features(const Internal::Autoscheduler::FunctionDAG &dag) override;
-    Internal::Autoscheduler::TreeRepresentation convert_to_tree(
-        const Internal::Autoscheduler::FunctionDAG &dag) override;
-    void enqueue(const Internal::Autoscheduler::FunctionDAG &dag,
-                double *cost_ptr) override;
+    void enqueue(const json &dag_data, double *cost_ptr) override;
     Internal::Autoscheduler::PredictionResult get_prediction(
         const Internal::Autoscheduler::TreeRepresentation &tree_repr,
         bool is_gpu_available) override;
@@ -53,6 +58,9 @@ private:
                             const std::string &category,
                             const std::map<std::string, double> &features);
     void initialize_default_calibrations();
+    void log_message(const std::string& message) {
+        std::cout << "[" << timestamp << " UTC] " << message << std::endl;
+    }
 };
 
 }  // namespace Halide
