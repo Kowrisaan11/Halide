@@ -1,9 +1,30 @@
 #include "AutoSchedule.h"
-#include <iostream>
 
 namespace Halide {
 namespace Internal {
 namespace Autoscheduler {
+
+AutoScheduler::AutoScheduler(const std::string& model_path,
+                           const std::string& scaler_params_path,
+                           bool use_gpu) {
+    metadata.gpu_available = use_gpu;
+    metadata.timestamp = current_time;
+    metadata.user = user_login;
+    metadata.device_type = use_gpu ? "GPU" : "CPU";
+    
+    cost_model = new DefaultCostModel(model_path, scaler_params_path, use_gpu);
+}
+
+AutoScheduler::~AutoScheduler() {
+    if (cost_model) {
+        delete cost_model;
+        cost_model = nullptr;
+    }
+}
+
+void AutoScheduler::log_message(const std::string& message) const {
+    std::cout << "[" << current_time << " UTC] " << message << std::endl;
+}
 
 void AutoScheduler::operator()(const Pipeline& pipeline,
                              const Target& target,
@@ -11,10 +32,8 @@ void AutoScheduler::operator()(const Pipeline& pipeline,
                              AutoSchedulerResults* results) {
     log_message("Starting autoscheduling process with " + metadata.device_type);
 
-    // Create DAG representation
     json dag_data = create_dag_representation(pipeline);
     
-    // Add metadata
     dag_data["metadata"] = {
         {"timestamp", metadata.timestamp},
         {"user", metadata.user},
@@ -22,14 +41,12 @@ void AutoScheduler::operator()(const Pipeline& pipeline,
         {"gpu_available", metadata.gpu_available}
     };
 
-    // Get prediction
     double cost;
     cost_model->enqueue(dag_data, &cost);
     cost_model->evaluate_costs();
 
     log_message("Predicted cost: " + std::to_string(cost));
 
-    // Apply the schedule if cost is acceptable
     if (cost >= 0) {
         apply_schedule(pipeline, dag_data);
         log_message("Schedule applied successfully");
@@ -48,8 +65,6 @@ void AutoScheduler::operator()(const Pipeline& pipeline,
 
 json AutoScheduler::create_dag_representation(const Pipeline& pipeline) {
     json dag_data;
-    
-    // Add nodes
     dag_data["nodes"] = json::array();
     
     std::vector<Func> outputs = pipeline.outputs();
@@ -62,7 +77,6 @@ json AutoScheduler::create_dag_representation(const Pipeline& pipeline) {
         dag_data["nodes"].push_back(node);
     }
 
-    // Add metadata
     dag_data["metadata"] = {
         {"timestamp", current_time},
         {"user", user_login},
@@ -79,16 +93,28 @@ void AutoScheduler::apply_schedule(const Pipeline& pipeline, const json& schedul
     log_message("Applying schedule from ML model predictions");
     
     try {
-        // Apply basic schedules for now
         for (auto& func : pipeline.outputs()) {
             func.compute_root();
         }
-        
         log_message("Schedule applied successfully");
     } catch (const Error& e) {
         log_message("Error applying schedule: " + std::string(e.what()));
         throw;
     }
+}
+
+void AutoSchedulerRegistry::operator()(const Pipeline& pipeline,
+                                     const Target& target,
+                                     const AutoschedulerParams& params,
+                                     AutoSchedulerResults* results) {
+    if (params.name != "adams2019") return;
+    
+    std::string model_path = "model.pt";
+    std::string scaler_params_path = "scaler_params.json";
+    bool use_gpu = target.has_gpu_feature();
+    
+    AutoScheduler scheduler(model_path, scaler_params_path, use_gpu);
+    scheduler(pipeline, target, params, results);
 }
 
 // Register the autoscheduler
