@@ -89,7 +89,6 @@ void register_autoscheduler_adams2019(
     const Halide::AutoschedulerParams &params,
     Halide::AutoSchedulerResults *results) {
 
-    // You can use any file names or logic here as needed for your model
     std::string model_path = "model.pt";
     std::string scaler_params_path = "scaler_params.json";
     bool use_gpu = target.has_gpu_feature();
