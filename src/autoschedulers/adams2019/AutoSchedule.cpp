@@ -1,10 +1,9 @@
+```cpp
 #include "AutoSchedule.h"
 #include <iostream>
 #include <string>
 #include <vector>
 #include "Halide.h"
-// Assuming nlohmann/json is included via AutoSchedule.h or directly
-// #include <nlohmann/json.hpp>
 
 namespace Halide {
 namespace Internal {
@@ -137,3 +136,4 @@ REGISTER_AUTOSCHEDULER(AutoSchedulerRegistry);
 }  // namespace Autoscheduler
 }  // namespace Internal
 }  // namespace Halide
+```
