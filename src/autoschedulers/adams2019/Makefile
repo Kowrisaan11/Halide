@@ -20,9 +20,26 @@ HALIDE_RPATH_FOR_BIN = '-Wl,-rpath,$$ORIGIN/../lib'
 HALIDE_RPATH_FOR_LIB = '-Wl,-rpath,$$ORIGIN'
 endif
 
-CXXFLAGS += -I$(COMMON_DIR)
+# Add required libraries for JSON and PyTorch
+TORCH_DIR ?= /usr/local/libtorch
+JSON_DIR ?= /usr/local/include
+
+CXXFLAGS += -I$(COMMON_DIR) -I$(TORCH_DIR)/include -I$(JSON_DIR) -I$(TORCH_DIR)/include/torch/csrc/api/include
+LDFLAGS += -L$(TORCH_DIR)/lib -ltorch -ltorch_cpu -lc10
+# Add CUDA support if available
+ifneq ($(wildcard $(TORCH_DIR)/lib/libtorch_cuda.so),)
+    LDFLAGS += -ltorch_cuda -lcuda
+    CXXFLAGS += -DTORCH_CUDA_AVAILABLE
+endif
 
 AUTOSCHED_WEIGHT_OBJECTS=$(BIN)/baseline_weights.o
+
+# Copy model files to bin directory
+MODEL_FILES = model.pt scaler_params.json calibration_data.txt baseline.weights category_calibration.txt
+$(BIN)/model_files: $(addprefix $(SRC)/, $(MODEL_FILES))
+	@mkdir -p $(@D)
+	cp $^ $(@D)/
+	@touch $@
 
 $(BIN)/binary2cpp: $(HALIDE_SRC_ROOT)/tools/binary2cpp.cpp
 	@mkdir -p $(@D)
@@ -54,13 +71,7 @@ $(BIN)/cost_model/adams2019_%.a: $(BIN)/cost_model.generator
 	@mkdir -p $(@D)
 	$^ -g $* -o $(BIN)/cost_model -f $* -n adams2019_$* target=$(HL_TARGET)-no_runtime -e stmt,static_library,h,assembly
 
-# It's important to use dynamic lookups for undefined symbols here: all of libHalide
-# is expected to be present (in the loading binary), so we explicitly make the symbols
-# undefined rather than dependent on libHalide.so.
-#
-# Also, be sure *not* to include libHalide in the link steps here; that can cause misbehavior
-# on OSX systems in certain situations -- note that $(LIB_HALIDE) is an order-only dep,
-# to ensure that (eg) Halide.h is built before this.
+# Updated build command for the autoscheduler plugin
 $(BIN)/libautoschedule_adams2019.$(PLUGIN_EXT): \
 				$(COMMON_DIR)/ASLog.cpp \
 				$(SRC)/AutoSchedule.cpp \
@@ -68,14 +79,12 @@ $(BIN)/libautoschedule_adams2019.$(PLUGIN_EXT): \
 				$(SRC)/Cache.cpp \
 				$(SRC)/DefaultCostModel.h \
 				$(SRC)/DefaultCostModel.cpp \
-				$(SRC)/Weights.h \
-				$(SRC)/Weights.cpp \
+				$(SRC)/CostModel.h \
 				$(SRC)/FunctionDAG.h \
 				$(SRC)/FunctionDAG.cpp \
 				$(SRC)/LoopNest.h \
 				$(SRC)/LoopNest.cpp \
 				$(SRC)/Featurization.h \
-				$(SRC)/CostModel.h \
 				$(SRC)/State.h \
 				$(SRC)/State.cpp \
 				$(SRC)/Timer.h \
@@ -83,27 +92,29 @@ $(BIN)/libautoschedule_adams2019.$(PLUGIN_EXT): \
 				$(AUTOSCHED_WEIGHT_OBJECTS) \
 				$(AUTOSCHED_COST_MODEL_LIBS) \
 				$(BIN)/auto_schedule_runtime.a \
+				$(BIN)/model_files \
 				| $(LIB_HALIDE)
 	@mkdir -p $(@D)
-	$(CXX) -shared $(USE_EXPORT_DYNAMIC) -fPIC -fvisibility=hidden -fvisibility-inlines-hidden $(CXXFLAGS) $(OPTIMIZE) -I $(BIN)/cost_model $(filter-out %.h $(LIBHALIDE_LDFLAGS),$^) -o $@ $(HALIDE_SYSTEM_LIBS) $(HALIDE_RPATH_FOR_LIB) -I $(SRC)
+	$(CXX) -shared $(USE_EXPORT_DYNAMIC) -fPIC -fvisibility=hidden -fvisibility-inlines-hidden \
+		$(CXXFLAGS) $(OPTIMIZE) -I $(BIN)/cost_model \
+		$(filter-out %.h $(LIBHALIDE_LDFLAGS) $(BIN)/model_files,$^) -o $@ \
+		$(HALIDE_SYSTEM_LIBS) $(LDFLAGS) $(HALIDE_RPATH_FOR_LIB) -I $(SRC)
 
+# Updated retrain cost model build
 $(BIN)/adams2019_retrain_cost_model: $(SRC)/retrain_cost_model.cpp \
 				$(COMMON_DIR)/ASLog.cpp \
 				$(SRC)/DefaultCostModel.h \
 				$(SRC)/DefaultCostModel.cpp \
-				$(SRC)/Weights.h \
-				$(SRC)/Weights.cpp \
 				$(SRC)/CostModel.h \
 				$(SRC)/NetworkSize.h \
 				$(AUTOSCHED_COST_MODEL_LIBS) \
 				$(AUTOSCHED_WEIGHT_OBJECTS) \
-				$(BIN)/auto_schedule_runtime.a
+				$(BIN)/auto_schedule_runtime.a \
+				$(BIN)/model_files
 	@mkdir -p $(@D)
-	$(CXX) $(CXXFLAGS) -frtti -Wall -I ../support -I $(BIN)/cost_model $(OPTIMIZE) $(filter-out %.h,$^) -o $@ $(LIBHALIDE_LDFLAGS) $(USE_OPEN_MP) $(HALIDE_RPATH_FOR_BIN) -I $(SRC)
-
-$(BIN)/adams2019_weightsdir_to_weightsfile: $(SRC)/weightsdir_to_weightsfile.cpp $(SRC)/Weights.cpp
-	@mkdir -p $(@D)
-	$(CXX) $(CXXFLAGS) $^ $(OPTIMIZE) -o $@ -I $(SRC)
+	$(CXX) $(CXXFLAGS) -frtti -Wall -I ../support -I $(BIN)/cost_model $(OPTIMIZE) \
+		$(filter-out %.h $(BIN)/model_files,$^) -o $@ \
+		$(LIBHALIDE_LDFLAGS) $(LDFLAGS) $(USE_OPEN_MP) $(HALIDE_RPATH_FOR_BIN) -I $(SRC)
 
 .PHONY: clean
 
