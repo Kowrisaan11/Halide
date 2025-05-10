@@ -1,5 +1,5 @@
 CXX      := g++
-SRCDIR   := $(dir $(realpath $(lastword $(MAKEFILE_LIST))))
+SRCDIR   := .
 HALIDE_SRC_ROOT := $(realpath $(SRCDIR)/../../../)
 HALIDE_DISTRIB_PATH ?= $(HALIDE_SRC_ROOT)/distrib
 
@@ -25,7 +25,7 @@ ifeq ($(wildcard /home/kowrisaan/fyp/libtorch/lib/libtorch_cuda.so),/home/kowris
 endif
 
 SRCS := AutoSchedule.cpp DefaultCostModel.cpp
-OBJS := $(addprefix bin/,$(SRCS:.cpp=.o))
+OBJS := $(patsubst %.cpp,bin/%.o,$(SRCS))
 
 .PHONY: all clean
 
@@ -38,7 +38,7 @@ bin/%.o: %.cpp | bin
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 bin/libautoschedule_adams2019.so: $(OBJS)
-	$(CXX) $(CXXFLAGS) $(OBJS) $(LDFLAGS) -o $@
+	$(CXX) $(CXXFLAGS) $^ $(LDFLAGS) -o $@
 
 clean:
 	rm -rf bin
