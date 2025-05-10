@@ -51,14 +51,21 @@ json AutoScheduler::create_dag_representation(const Pipeline& pipeline) {
     
     // Add nodes
     dag_data["nodes"] = json::array();
-    for (const auto& func : pipeline.outputs()) {
+    
+    std::vector<Func> outputs = pipeline.outputs();
+    for (const auto& func : outputs) {
         json node;
         node["name"] = func.name();
         node["type"] = "output";
+        
+        // Add function-specific properties
+        node["dimensions"] = func.dimensions();
+        node["is_extern"] = func.is_extern();
+        
         dag_data["nodes"].push_back(node);
     }
 
-    // Add timestamp and user info
+    // Add metadata
     dag_data["metadata"] = {
         {"timestamp", current_time},
         {"user", user_login},
@@ -75,11 +82,15 @@ void AutoScheduler::apply_schedule(const Pipeline& pipeline, const json& schedul
     log_message("Applying schedule from ML model predictions");
     
     try {
-        // Your schedule application logic here
-        // This will depend on how your ML model outputs scheduling decisions
+        // Your scheduling logic here
+        // Example:
+        for (auto& func : pipeline.outputs()) {
+            // Apply basic compute_root() for now
+            func.compute_root();
+        }
         
         log_message("Schedule applied successfully");
-    } catch (const std::exception& e) {
+    } catch (const Error& e) {
         log_message("Error applying schedule: " + std::string(e.what()));
         throw;
     }
