@@ -26,6 +26,7 @@ JSON_DIR ?= /usr/local/include
 
 CXXFLAGS += -I$(COMMON_DIR) -I$(TORCH_DIR)/include -I$(JSON_DIR) -I$(TORCH_DIR)/include/torch/csrc/api/include
 LDFLAGS += -L$(TORCH_DIR)/lib -ltorch -ltorch_cpu -lc10
+
 # Add CUDA support if available
 ifneq ($(wildcard $(TORCH_DIR)/lib/libtorch_cuda.so),)
     LDFLAGS += -ltorch_cuda -lcuda
@@ -34,8 +35,8 @@ endif
 
 AUTOSCHED_WEIGHT_OBJECTS=$(BIN)/baseline_weights.o
 
-# Copy model files to bin directory
-MODEL_FILES = model.pt scaler_params.json calibration_data.txt baseline.weights category_calibration.txt
+# Only copy required model files
+MODEL_FILES = model.pt scaler_params.json
 $(BIN)/model_files: $(addprefix $(SRC)/, $(MODEL_FILES))
 	@mkdir -p $(@D)
 	cp $^ $(@D)/
@@ -54,7 +55,7 @@ $(BIN)/baseline_weights.o: $(BIN)/baseline_weights.cpp
 
 AUTOSCHED_COST_MODEL_LIBS=\
 $(BIN)/cost_model/adams2019_cost_model.a \
-$(BIN)/cost_model/adams2019_train_cost_model.a \
+$(BIN)/cost_model/adams2019_train_cost_model.a
 
 $(BIN)/cost_model.generator: $(SRC)/cost_model_generator.cpp \
 				$(SRC)/cost_model_schedule.h \
@@ -99,22 +100,6 @@ $(BIN)/libautoschedule_adams2019.$(PLUGIN_EXT): \
 		$(CXXFLAGS) $(OPTIMIZE) -I $(BIN)/cost_model \
 		$(filter-out %.h $(LIBHALIDE_LDFLAGS) $(BIN)/model_files,$^) -o $@ \
 		$(HALIDE_SYSTEM_LIBS) $(LDFLAGS) $(HALIDE_RPATH_FOR_LIB) -I $(SRC)
-
-# Updated retrain cost model build
-$(BIN)/adams2019_retrain_cost_model: $(SRC)/retrain_cost_model.cpp \
-				$(COMMON_DIR)/ASLog.cpp \
-				$(SRC)/DefaultCostModel.h \
-				$(SRC)/DefaultCostModel.cpp \
-				$(SRC)/CostModel.h \
-				$(SRC)/NetworkSize.h \
-				$(AUTOSCHED_COST_MODEL_LIBS) \
-				$(AUTOSCHED_WEIGHT_OBJECTS) \
-				$(BIN)/auto_schedule_runtime.a \
-				$(BIN)/model_files
-	@mkdir -p $(@D)
-	$(CXX) $(CXXFLAGS) -frtti -Wall -I ../support -I $(BIN)/cost_model $(OPTIMIZE) \
-		$(filter-out %.h $(BIN)/model_files,$^) -o $@ \
-		$(LIBHALIDE_LDFLAGS) $(LDFLAGS) $(USE_OPEN_MP) $(HALIDE_RPATH_FOR_BIN) -I $(SRC)
 
 .PHONY: clean
 
