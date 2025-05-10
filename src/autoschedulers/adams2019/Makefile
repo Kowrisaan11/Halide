@@ -24,16 +24,17 @@ endif
 TORCH_DIR = /home/kowrisaan/fyp/libtorch
 JSON_DIR ?= /usr/local/include
 
-# Add timestamp and user information as compiler definitions
-CURRENT_TIME = 2025-05-10 17:40:02
+# Define user and time as simple strings without spaces
 CURRENT_USER = Jathu03
-CXXFLAGS += -DCURRENT_TIME=\"$(CURRENT_TIME)\" -DCURRENT_USER=\"$(CURRENT_USER)\"
+TIMESTAMP = 2025_05_10_17_51_54
 
 # Add include paths
 CXXFLAGS += -I$(COMMON_DIR) \
             -I$(TORCH_DIR)/include \
             -I$(TORCH_DIR)/include/torch/csrc/api/include \
-            -I$(JSON_DIR)
+            -I$(JSON_DIR) \
+            -DCURRENT_USER=\"$(CURRENT_USER)\" \
+            -DTIMESTAMP=\"$(TIMESTAMP)\"
 
 # Add library paths and libraries
 LDFLAGS += -L$(TORCH_DIR)/lib -ltorch -ltorch_cpu -lc10
@@ -54,8 +55,6 @@ ifeq ($(TORCH_CHECK),no)
 endif
 
 $(info Using LibTorch from $(TORCH_DIR))
-$(info Current user: $(CURRENT_USER))
-$(info Current time: $(CURRENT_TIME))
 
 # Only required model files
 MODEL_FILES = model.pt scaler_params.json
@@ -103,22 +102,13 @@ $(BIN)/libautoschedule_adams2019.$(PLUGIN_EXT): \
 				| $(LIB_HALIDE)
 	@mkdir -p $(@D)
 	@echo "Building autoscheduler plugin..."
-	@echo "Using LibTorch: $(TORCH_DIR)"
-	@echo "User: $(CURRENT_USER)"
-	@echo "Time: $(CURRENT_TIME)"
 	$(CXX) -shared $(USE_EXPORT_DYNAMIC) -fPIC -fvisibility=hidden -fvisibility-inlines-hidden \
 		$(CXXFLAGS) $(OPTIMIZE) -I $(BIN)/cost_model \
 		$(filter-out %.h $(LIBHALIDE_LDFLAGS) $(BIN)/model_files,$^) -o $@ \
 		$(HALIDE_SYSTEM_LIBS) $(LDFLAGS) $(HALIDE_RPATH_FOR_LIB) -I $(SRC)
 	@echo "Successfully built autoscheduler plugin"
 
-# Build verification target
-verify_torch:
-	@echo "Verifying LibTorch installation..."
-	@test -f $(TORCH_DIR)/lib/libtorch.so || (echo "Error: LibTorch not found in $(TORCH_DIR)/lib" && exit 1)
-	@echo "LibTorch verified successfully"
-
-.PHONY: clean verify_torch
+.PHONY: clean
 
 clean:
 	rm -rf $(BIN)
