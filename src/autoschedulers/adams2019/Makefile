@@ -23,7 +23,7 @@ CXXFLAGS += -I$(HALIDE_DISTRIB_PATH)/include \
             -Wsign-compare \
             -Wno-unknown-warning-option \
             -O3
-
+	    -DHALIDE_EXPORT_SYMBOL="__attribute__((visibility(\"default\")))"
 # LibTorch configuration
 TORCH_DIR = /home/kowrisaan/fyp/libtorch
 
