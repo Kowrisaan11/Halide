@@ -36,6 +36,10 @@ CXXFLAGS += -I$(COMMON_DIR) \
             -Wno-unknown-warning-option \
             -O3 \
             -fPIC
+	    -I$(HALIDE_DISTRIB_PATH)/include \
+            -I$(HALIDE_DISTRIB_PATH)/tools \
+            -I$(HALIDE_SRC_ROOT)/src \
+            -I$(HALIDE_SRC_ROOT)/tools
 
 # Add library paths and libraries
 LDFLAGS += -L$(TORCH_DIR)/lib \
