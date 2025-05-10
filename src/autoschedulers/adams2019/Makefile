@@ -1,4 +1,3 @@
-```makefile
 THIS_MAKEFILE = $(realpath $(filter %Makefile, $(MAKEFILE_LIST)))
 SRC = $(strip $(shell dirname $(THIS_MAKEFILE)))
 HALIDE_SRC_ROOT = $(realpath $(SRC)/../../../)
@@ -57,4 +56,3 @@ $(BIN)/libautoschedule_adams2019.$(PLUGIN_EXT): $(AUTOSCHEDULER_SRC) | $(LIB_HAL
 
 clean:
 	rm -rf $(BIN)
-```
