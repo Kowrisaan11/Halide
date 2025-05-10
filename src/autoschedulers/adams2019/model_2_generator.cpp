@@ -23,7 +23,7 @@ static torch::Tensor buffer_to_tensor(const Buffer<float> &buf) {
 }
 
 static torch::Tensor buffer_to_long_tensor(const Buffer<int> &buf) {
-    // buf: [2, num_edges] -> tensor of shape {2, num_edges}
+    
     int64_t D0 = buf.dim(0).extent();
     int64_t D1 = buf.dim(1).extent();
     auto options = torch::TensorOptions().dtype(torch::kInt64).device(torch::kCPU);
