@@ -41,14 +41,17 @@ LDFLAGS += -L$(LIBTORCH_LIB) \
            -lpthread \
            -ldl
 
+# Source files for the new LSTM-based autoscheduler
 AUTOSCHEDULER_SRC = \
     $(COMMON_DIR)/ASLog.cpp \
     $(COMMON_DIR)/PerfectHashMap.h \
     $(SRC)/AutoSchedule.cpp \
+    $(SRC)/AutoSchedule.h \
     $(SRC)/Cache.cpp \
     $(SRC)/CostModel.h \
     $(SRC)/FunctionDAG.cpp \
     $(SRC)/SimpleLSTMModel.cpp \
+    $(SRC)/SimpleLSTMModel.h \
     $(SRC)/State.cpp \
     $(SRC)/TreeRepresentation.cpp \
     $(SRC)/Timer.h
