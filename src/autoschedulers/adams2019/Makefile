@@ -20,16 +20,21 @@ HALIDE_RPATH_FOR_BIN = '-Wl,-rpath,$$ORIGIN/../lib'
 HALIDE_RPATH_FOR_LIB = '-Wl,-rpath,$$ORIGIN'
 endif
 
+# LibTorch paths
+LIBTORCH_INCLUDE = /home/kowrisaan/fyp/libtorch/include
+LIBTORCH_LIB = /home/kowrisaan/fyp/libtorch/lib
+
 CXXFLAGS += -I$(COMMON_DIR) \
             -I$(HALIDE_SRC_ROOT)/src \
-            -I/home/kowrisaan/libtorch/include \
+            -I$(LIBTORCH_INCLUDE) \
+            -I$(LIBTORCH_INCLUDE)/torch/csrc/api/include \
             -I/usr/include/nlohmann \
             -std=c++17 \
             -Wall \
             -Werror \
             -fno-rtti
 
-LDFLAGS += -L/home/kowrisaan/libtorch/lib \
+LDFLAGS += -L$(LIBTORCH_LIB) \
            -ltorch \
            -ltorch_cpu \
            -lc10 \
