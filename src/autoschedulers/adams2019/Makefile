@@ -1,5 +1,3 @@
-# Minimal Makefile for adams2019 autoscheduler
-
 CXX      := g++
 SRCDIR   := $(dir $(realpath $(lastword $(MAKEFILE_LIST))))
 HALIDE_SRC_ROOT := $(realpath $(SRCDIR)/../../../)
