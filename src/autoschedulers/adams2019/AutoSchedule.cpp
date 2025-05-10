@@ -1,4 +1,3 @@
-```cpp
 #include "AutoSchedule.h"
 #include <iostream>
 #include <string>
@@ -136,4 +135,3 @@ REGISTER_AUTOSCHEDULER(AutoSchedulerRegistry);
 }  // namespace Autoscheduler
 }  // namespace Internal
 }  // namespace Halide
-```
