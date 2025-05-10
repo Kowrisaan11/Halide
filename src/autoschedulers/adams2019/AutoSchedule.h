@@ -4,21 +4,26 @@
 #include <string>
 #include <vector>
 #include <iostream>
-#include <Halide.h>
+#include "Halide.h"
+#include "AutoSchedule.h"
 #include "CostModel.h"
 #include "DefaultCostModel.h"
 #include <nlohmann/json.hpp>
-
-using json = nlohmann::json;
 
 namespace Halide {
 namespace Internal {
 namespace Autoscheduler {
 
+using json = nlohmann::json;
+
+// Forward declarations
+class AutoScheduler;
+struct AutoSchedulerRegistry;
+
 class AutoScheduler {
 private:
-    CostModel* cost_model;
-    const std::string current_time{"2025-05-10 18:54:37"};
+    CostModel* cost_model{nullptr};
+    const std::string current_time{"2025-05-10 18:58:47"};
     const std::string user_login{"Jathu03"};
     
     struct MetaData {
@@ -28,24 +33,16 @@ private:
         std::string device_type;
     } metadata;
 
+    void log_message(const std::string& message) const;
+    json create_dag_representation(const Pipeline& pipeline);
+    void apply_schedule(const Pipeline& pipeline, const json& schedule_data);
+
 public:
     AutoScheduler(const std::string& model_path,
                  const std::string& scaler_params_path,
                  bool use_gpu = false);
     ~AutoScheduler();
 
-    void operator()(const Pipeline& pipeline,
-                   const Target& target,
-                   const AutoschedulerParams& params,
-                   AutoSchedulerResults* results);
-
-private:
-    void log_message(const std::string& message) const;
-    json create_dag_representation(const Pipeline& pipeline);
-    void apply_schedule(const Pipeline& pipeline, const json& schedule_data);
-};
-
-struct AutoSchedulerRegistry {
     void operator()(const Pipeline& pipeline,
                    const Target& target,
                    const AutoschedulerParams& params,
