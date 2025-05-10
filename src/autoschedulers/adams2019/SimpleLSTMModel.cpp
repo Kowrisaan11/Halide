@@ -1,4 +1,3 @@
-```cpp
 /*
   SimpleLSTMModel.cpp: Implementation of CostModel using LibTorch LSTM model.
   Predicts execution times for Halide schedules using features from TreeRepresentation.
@@ -413,4 +412,3 @@ private:
 } // namespace Autoscheduler
 } // namespace Internal
 } // namespace Halide
-```
