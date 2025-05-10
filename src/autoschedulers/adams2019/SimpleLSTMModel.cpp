@@ -1,10 +1,11 @@
 /*
   SimpleLSTMModel.cpp: Implementation of SimpleLSTMModel.
-  Extracts features from TreeRepresentation, performs LibTorch inference,
+  Extracts features from TreeRepresentation JSON, performs LibTorch inference,
   and applies calibration corrections.
 */
 
 #include "SimpleLSTMModel.h"
+#include "TreeRepresentation.h"
 #include <filesystem>
 #include <fstream>
 #include <algorithm>
@@ -57,7 +58,7 @@ SimpleLSTMModel::SimpleLSTMModel(const std::string &model_path, const std::strin
     if (!scaler_file.is_open()) {
         internal_error << "Failed to open " << scaler_params_path;
     }
-    json scaler_params;
+    nlohmann::json scaler_params;
     scaler_file >> scaler_params;
     X_scalar_center_ = scaler_params["X_scalar_center"].get<std::vector<double>>();
     X_scalar_scale_ = scaler_params["X_scalar_scale"].get<std::vector<double>>();
@@ -80,13 +81,13 @@ SimpleLSTMModel::SimpleLSTMModel(const std::string &model_path, const std::strin
 }
 
 std::map<std::string, double> SimpleLSTMModel::extract_features(const TreeRepresentation &tree, const FunctionDAG &dag) {
-    // Assume TreeRepresentation provides JSON-like data
-    json json_data = tree.to_json(); // Placeholder: Implement to_json in TreeRepresentation
+    // Convert TreeRepresentation to JSON
+    nlohmann::json json_data = tree.to_json();
     std::map<std::string, double> features;
 
     // Extract global features
     auto global_node = std::find_if(json_data["children"].begin(), json_data["children"].end(),
-        [](const json &child) { return child["name"] == "Global Features"; });
+        [](const nlohmann::json &child) { return child["name"] == "Global Features"; });
     if (global_node != json_data["children"].end()) {
         features["cache_hits"] = global_node->value("cache_hits", 0.0);
         features["cache_misses"] = global_node->value("cache_misses", 0.0);
@@ -179,7 +180,7 @@ std::map<std::string, double> SimpleLSTMModel::extract_features(const TreeRepres
     int nodes_count = json_data["children"].size();
     int edges_count = 0;
     for (const auto &node : json_data["children"]) {
-        edges_count += node.value("children", json::array()).size();
+        edges_count += node.value("children", nlohmann::json::array()).size();
     }
     features["nodes_count"] = nodes_count;
     features["edges_count"] = edges_count;
