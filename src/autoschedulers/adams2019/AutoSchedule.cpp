@@ -57,11 +57,8 @@ json AutoScheduler::create_dag_representation(const Pipeline& pipeline) {
         json node;
         node["name"] = func.name();
         node["type"] = "output";
-        
-        // Add function-specific properties
         node["dimensions"] = func.dimensions();
         node["is_extern"] = func.is_extern();
-        
         dag_data["nodes"].push_back(node);
     }
 
@@ -82,10 +79,8 @@ void AutoScheduler::apply_schedule(const Pipeline& pipeline, const json& schedul
     log_message("Applying schedule from ML model predictions");
     
     try {
-        // Your scheduling logic here
-        // Example:
+        // Apply basic schedules for now
         for (auto& func : pipeline.outputs()) {
-            // Apply basic compute_root() for now
             func.compute_root();
         }
         
