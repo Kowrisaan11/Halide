@@ -1,38 +1,22 @@
 /*
-  AutoSchedule.h: Header for Adams2019 autoscheduler with SimpleLSTMModel integration.
-  Defines parameters and interface for generating schedules using beam search
-  and a PyTorch-based LSTM cost model.
+  AutoSchedule.h: Header for the adams2019 autoscheduler.
+  Declares the function to generate schedules for a FunctionDAG.
 */
 
-#ifndef AUTOSCHEDULE_H
-#define AUTOSCHEDULE_H
+#ifndef HALIDE_AUTOSCHEDULER_AUTO_SCHEDULE_H
+#define HALIDE_AUTOSCHEDULER_AUTO_SCHEDULE_H
 
-#include "Halide.h"
-#include <string>
-#include <vector>
+#include "FunctionDAG.h"
+#include "MachineParams.h"
 
 namespace Halide {
 namespace Internal {
 namespace Autoscheduler {
 
-struct Adams2019Params {
-    int beam_size = 32;              // Number of states to track in beam search
-    int random_dropout = 80;         // Percentage chance to keep states (0-100)
-    int random_dropout_seed = 0;     // Seed for random dropout
-    bool disable_subtiling = false;  // Disable subtiling in scheduling
-    int parallelism = 4;             // Number of threads for parallel execution
-    int64_t memory_limit = 1ULL << 30; // Memory limit in bytes (default 1GB)
-
-    Adams2019Params() = default;
-};
-
-void generate_schedule(const std::vector<Function> &outputs,
-                       const Target &target,
-                       const Adams2019Params &params,
-                       AutoSchedulerResults *auto_scheduler_results);
+void generate_function_schedule(FunctionDAG &dag, const MachineParams &params);
 
 }  // namespace Autoscheduler
 }  // namespace Internal
 }  // namespace Halide
 
-#endif // AUTOSCHEDULE_H
+#endif  // HALIDE_AUTOSCHEDULER_AUTO_SCHEDULE_H
