@@ -1,32 +1,25 @@
 #include "DefaultCostModel.h"
 #include <fstream>
-#include <iostream>
-#include <ctime>
-#include <iomanip>
-#include <sstream>
 
 namespace Halide {
 
 const HardwareCorrectionFactors GPU_CORRECTION_FACTORS = {
-    0.28, 0.9, 0.95, 100.0, 500.0, 0.92
+    0.28, 0.9, 0.95, 100.0
 };
 
 const HardwareCorrectionFactors CPU_CORRECTION_FACTORS = {
-    0.35, 1.0, 0.97, 50.0, 300.0, 0.94
+    0.35, 1.0, 0.97, 50.0
 };
 
 DefaultCostModel::DefaultCostModel(const std::string &model_path,
                                  const std::string &scaler_params_path,
                                  bool use_gpu)
     : device(use_gpu && torch::cuda::is_available() ? torch::kCUDA : torch::kCPU),
-      correction_factors(use_gpu ? GPU_CORRECTION_FACTORS : CPU_CORRECTION_FACTORS),
-      session_start(std::chrono::system_clock::now()),
-      user_login("Jathu03") {
+      correction_factors(use_gpu ? GPU_CORRECTION_FACTORS : CPU_CORRECTION_FACTORS) {
     
     std::string device_type = device.is_cuda() ? "GPU" : "CPU";
     log_message("Initializing DefaultCostModel with " + device_type + " support");
     
-    // Load the model
     try {
         model = torch::jit::load(model_path);
         model.to(device);
@@ -38,7 +31,6 @@ DefaultCostModel::DefaultCostModel(const std::string &model_path,
         throw;
     }
 
-    // Load scaler parameters
     std::ifstream scaler_file(scaler_params_path);
     if (!scaler_file.is_open()) {
         std::string error_msg = "Failed to open " + scaler_params_path;
@@ -59,33 +51,13 @@ void DefaultCostModel::initialize_default_calibrations() {
     log_message("Initialized default category calibrations");
 }
 
-void DefaultCostModel::set_pipeline_features(const Internal::Autoscheduler::FunctionDAG &dag) {
-    auto tree = convert_to_tree(dag);
-    log_message("Pipeline features set from DAG");
-}
-
-Internal::Autoscheduler::TreeRepresentation DefaultCostModel::convert_to_tree(
-    const Internal::Autoscheduler::FunctionDAG &dag) {
-    
+void DefaultCostModel::enqueue(const json &dag_data, double *cost_ptr) {
     Internal::Autoscheduler::TreeRepresentation tree;
+    tree.tree_data = dag_data;
+    tree.tree_data["timestamp"] = timestamp;
+    tree.tree_data["user"] = user_login;
+    tree.extracted_features = extract_features(tree.tree_data);
     
-    // Create JSON representation
-    json& tree_data = tree.tree_data;
-    tree_data["timestamp"] = "2025-05-10 18:01:07";
-    tree_data["user"] = user_login;
-    
-    // Convert DAG nodes to JSON
-    tree_data["nodes"] = json::array();
-    
-    // Extract features from the tree
-    tree.extracted_features = extract_features(tree_data);
-    
-    return tree;
-}
-
-void DefaultCostModel::enqueue(const Internal::Autoscheduler::FunctionDAG &dag,
-                             double *cost_ptr) {
-    auto tree = convert_to_tree(dag);
     queued_trees.push_back(tree);
     queued_cost_ptrs.push_back(cost_ptr);
 }
@@ -96,24 +68,17 @@ Internal::Autoscheduler::PredictionResult DefaultCostModel::get_prediction(
     
     Internal::Autoscheduler::PredictionResult result;
     
-    // Prepare input tensor
     torch::Tensor input_tensor = prepare_input_tensor(tree_repr.extracted_features);
-    
-    // Get raw prediction
     double raw_prediction = get_raw_prediction(input_tensor);
     
-    // Get category and apply corrections
     std::string category = get_file_category(tree_repr.extracted_features);
     double corrected_prediction = correct_prediction(
         raw_prediction, is_gpu_available, category, tree_repr.extracted_features);
     
-    // Fill result structure
     result.raw_prediction = raw_prediction;
     result.corrected_prediction = corrected_prediction;
     result.category = category;
     result.features = tree_repr.extracted_features;
-    
-    log_prediction_info(category, raw_prediction, corrected_prediction);
     
     return result;
 }
@@ -139,12 +104,7 @@ void DefaultCostModel::reset() {
 std::map<std::string, double> DefaultCostModel::extract_features(const json &json_data) {
     std::map<std::string, double> features;
     
-    // Initialize features with zeros
-    for (const auto& feature : Internal::Autoscheduler::FIXED_FEATURES) {
-        features[feature] = 0.0;
-    }
-    
-    // Extract basic features
+    // Extract features from JSON data
     if (json_data.contains("nodes")) {
         features["nodes_count"] = json_data["nodes"].size();
     }
@@ -170,10 +130,7 @@ double DefaultCostModel::compute_complexity_score(
     const std::map<std::string, double> &features) {
     
     double complexity = 0.0;
-    
-    // Add complexity factors
     complexity += features.count("nodes_count") ? features.at("nodes_count") * 0.1 : 0.0;
-    
     return complexity;
 }
 
@@ -181,8 +138,8 @@ torch::Tensor DefaultCostModel::prepare_input_tensor(
     const std::map<std::string, double>& features) {
     
     std::vector<double> feature_vector;
-    for (const auto& feature : Internal::Autoscheduler::FIXED_FEATURES) {
-        feature_vector.push_back(features.count(feature) ? features.at(feature) : 0.0);
+    for (const auto& [key, value] : features) {
+        feature_vector.push_back(value);
     }
     
     return torch::tensor(feature_vector, torch::kFloat32).to(device);
@@ -206,33 +163,18 @@ double DefaultCostModel::correct_prediction(
     const std::string &category,
     const std::map<std::string, double> &features) {
     
-    // Apply category correction
     auto cat_it = category_calibration.find(category);
     if (cat_it != category_calibration.end()) {
         double corrected = raw_prediction * cat_it->second.scale_factor + cat_it->second.bias;
         return std::max(corrected, 0.0);
     }
     
-    // Apply hardware correction
     double hw_correction = correction_factors.base_correction;
     if (is_gpu) {
         hw_correction *= correction_factors.gpu_correction;
     }
     
     return std::max(raw_prediction * hw_correction, 0.0);
-}
-
-void DefaultCostModel::log_prediction_info(
-    const std::string& category,
-    double raw_prediction,
-    double corrected_prediction) {
-    
-    std::stringstream ss;
-    ss << "[" << "2025-05-10 18:01:07" << " UTC] "
-       << "Prediction for category '" << category << "': "
-       << "raw=" << raw_prediction << ", "
-       << "corrected=" << corrected_prediction;
-    std::cout << ss.str() << std::endl;
 }
 
 }  // namespace Halide
