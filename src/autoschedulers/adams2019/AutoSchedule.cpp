@@ -1,134 +1,110 @@
 /*
-  AutoSchedule.cpp: Implementation of the adams2019 autoscheduler for Halide.
-  Uses a cost model to evaluate schedules and search for an optimal one.
+  AutoSchedule.cpp: Implementation of the Adams2019 autoscheduler.
+  Uses SimpleLSTMModel to evaluate schedules and search for an optimal one.
 */
 
 #include "AutoSchedule.h"
 #include "CostModel.h"
 #include "SimpleLSTMModel.h"
-#include "FunctionDAG.h"
 #include "State.h"
 #include "ASLog.h"
-#include "Featurization.h"
 #include "Timer.h"
 #include <algorithm>
 #include <memory>
-#include <queue>
-#include <set>
-#include <unordered_map>
-#include <vector>
+#include <random>
+#include <sstream>
 
 namespace Halide {
 namespace Internal {
 namespace Autoscheduler {
 
-struct AutoSchedule {
-    const FunctionDAG &dag;
-    const MachineParams ¶ms;
-    std::unique_ptr<CostModel> cost_model;
-    std::vector<IntrusivePtr<State>> best_states;
+namespace {
 
-    AutoSchedule(const FunctionDAG &dag, const MachineParams ¶ms)
-        : dag(dag), params(params) {
-        // Initialize the cost model with paths to the .pt model and scaler parameters
-        cost_model = std::make_unique<SimpleLSTMModel>(
-            "/home/kowrisaan/fyp/Halide/src/autoschedulers/adams2019/model.pt",
-            "/home/kowrisaan/fyp/Halide/src/autoschedulers/adams2019/scaler_params.json");
-    }
+IntrusivePtr<State> optimal_schedule(const std::vector<Function> &outputs,
+                                    const Adams2019Params &params,
+                                    SimpleLSTMModel &cost_model,
+                                    std::mt19937 &rng) {
+    // Create an initial state
+    IntrusivePtr<State> initial{new State};
+    initial->root = new TreeRepresentation(outputs); // Initialize with TreeRepresentation
+    initial->cost = cost_model.evaluate_cost(initial);
 
-    void generate_schedule() {
-        // Initial state
-        IntrusivePtr<State> root = new State(dag, params);
-        root->compute_features(dag);
+    // Simple beam search
+    std::vector<IntrusivePtr<State>> beam = {initial};
+    std::vector<IntrusivePtr<State>> next_beam;
+    int samples = 0;
 
-        // Priority queue for beam search
-        std::priority_queue<std::pair<double, IntrusivePtr<State>>,
-                            std::vector<std::pair<double, IntrusivePtr<State>>>,
-                            std::greater<>> beam;
-        beam.emplace(0.0, root);
-
-        // Beam search parameters
-        const int beam_size = params.beam_size;
-        const int max_depth = 100; // Example limit
-        std::set<uint64_t> visited;
-
-        while (!beam.empty()) {
-            // Get the top states
-            std::vector<std::pair<double, IntrusivePtr<State>>> current_beam;
-            for (int i = 0; i < beam_size && !beam.empty(); i++) {
-                current_beam.push_back(beam.top());
-                beam.pop();
-            }
-
-            // Expand each state
-            for (const auto &p : current_beam) {
-                IntrusivePtr<State> state = p.second;
-                if (state->depth >= max_depth) {
-                    continue;
-                }
-
-                // Generate child states
-                std::vector<IntrusivePtr<State>> children = state->generate_children(dag, params);
-                for (const auto &child : children) {
-                    if (visited.find(child->hash()) != visited.end()) {
-                        continue;
-                    }
-                    visited.insert(child->hash());
-
-                    // Evaluate cost using SimpleLSTMModel
-                    double cost = cost_model->evaluate_cost(child, dag);
-                    child->cost = cost;
-
-                    // Add to beam
-                    beam.emplace(cost, child);
-
-                    // Keep track of best states
-                    if (best_states.size() < static_cast<size_t>(beam_size)) {
-                        best_states.push_back(child);
-                        std::push_heap(best_states.begin(), best_states.end(),
-                                       [](const IntrusivePtr<State> &a, const IntrusivePtr<State> &b) {
-                                           return a->cost > b->cost;
-                                       });
-                    } else if (cost < best_states.front()->cost) {
-                        std::pop_heap(best_states.begin(), best_states.end(),
-                                      [](const IntrusivePtr<State> &a, const IntrusivePtr<State> &b) {
-                                          return a->cost > b->cost;
-                                      });
-                        best_states.back() = child;
-                        std::push_heap(best_states.begin(), best_states.end(),
-                                       [](const IntrusivePtr<State> &a, const IntrusivePtr<State> &b) {
-                                           return a->cost > b->cost;
-                                       });
-                    }
-                }
-            }
-
-            // Trim beam to beam_size
-            while (beam.size() > static_cast<size_t>(beam_size)) {
-                beam.pop();
+    while (samples < params.max_samples && !beam.empty()) {
+        next_beam.clear();
+        for (const auto &state : beam) {
+            // Generate child states (simplified: perturb schedule)
+            for (int i = 0; i < params.beam_size; ++i) {
+                IntrusivePtr<State> child{new State};
+                child->root = new TreeRepresentation(*state->root); // Copy and perturb
+                child->cost = cost_model.evaluate_cost(child);
+                next_beam.push_back(child);
+                samples++;
+                if (samples >= params.max_samples) break;
             }
         }
-    }
 
-    IntrusivePtr<State> get_best_schedule() const {
-        if (best_states.empty()) {
-            return nullptr;
+        // Select top beam_size states
+        std::sort(next_beam.begin(), next_beam.end(),
+                  [](const auto &a, const auto &b) { return a->cost < b->cost; });
+        if (next_beam.size() > static_cast<size_t>(params.beam_size)) {
+            next_beam.resize(params.beam_size);
         }
-        return best_states.front();
+        beam = std::move(next_beam);
     }
-};
 
-void generate_function_schedule(FunctionDAG &dag, const MachineParams ¶ms) {
-    AutoSchedule scheduler(dag, params);
-    scheduler.generate_schedule();
-    IntrusivePtr<State> best = scheduler.get_best_schedule();
-    if (best != nullptr) {
-        best->apply_schedule(dag);
+    // Return the best state
+    if (beam.empty()) {
+        return initial;
+    }
+    return *std::min_element(beam.begin(), beam.end(),
+                             [](const auto &a, const auto &b) { return a->cost < b->cost; });
+}
+
+} // namespace
+
+void generate_schedule(const std::vector<Function> &outputs,
+                       const Target &target,
+                       const Adams2019Params &params,
+                       AutoSchedulerResults *auto_scheduler_results) {
+    Timer timer;
+    std::mt19937 rng(params.random_seed);
+
+    // Initialize cost model
+    SimpleLSTMModel cost_model(
+        "/path/to/model.pt",
+        "/path/to/scaler_params.json");
+
+    // Find optimal schedule
+    IntrusivePtr<State> optimal = optimal_schedule(outputs, params, cost_model, rng);
+
+    if (optimal) {
+        // Apply the schedule
+        optimal->apply_schedule(outputs, params);
+
+        // Log results
+        if (params.verbosity >= 2) {
+            ASLog::info() << "Optimal cost: " << optimal->cost
+                          << ", Time: " << timer.elapsed() << "s\n";
+            optimal->dump(std::cerr);
+        }
+
+        // Save results
+        if (auto_scheduler_results) {
+            std::ostringstream out;
+            optimal->save_featurization(out);
+            auto_scheduler_results->schedule_source = optimal->schedule_source;
+            auto_scheduler_results->featurization.assign(out.str().begin(), out.str().end());
+        }
     } else {
         ASLog::warning() << "No valid schedule found\n";
     }
 }
 
-}  // namespace Autoscheduler
-}  // namespace Internal
-}  // namespace Halide
+} // namespace Autoscheduler
+} // namespace Internal
+} // namespace Halide
