@@ -27,6 +27,13 @@ struct CategoryCorrection {
 
 class DefaultCostModel : public Internal::Autoscheduler::CostModel {
 private:
+    void log_message(const std::string& message) {
+        std::stringstream ss;
+        auto now = std::chrono::system_clock::now();
+        std::time_t now_time = std::chrono::system_clock::to_time_t(now);
+        ss << "[" << "2025-05-10 18:07:06" << " UTC] " << message;
+        std::cout << ss.str() << std::endl;
+    }
     torch::jit::script::Module model;
     torch::Device device;
     json scaler_params;
