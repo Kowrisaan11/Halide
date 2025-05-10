@@ -1,25 +1,25 @@
-/*
-  CostModel.h: Abstract base class for cost models in Halide autoscheduler.
-*/
-
-#ifndef HALIDE_AUTOSCHEDULER_COST_MODEL_H
-#define HALIDE_AUTOSCHEDULER_COST_MODEL_H
+#ifndef COST_MODEL_H
+#define COST_MODEL_H
 
 #include <string>
-#include <cstdint>
-
+#include <memory>
 #include "Featurization.h"
 #include "FunctionDAG.h"
 #include "HalideBuffer.h"
 #include "PerfectHashMap.h"
+
+// This is the abstract base class for all cost models (including LSTM/ML-based ones).
+// To add a new cost model (e.g., using a PyTorch .pt model), inherit from this interface.
 
 namespace Halide {
 
 namespace Internal {
 namespace Autoscheduler {
 
+// Type alias for mapping DAG stages to their features.
 typedef PerfectHashMap<FunctionDAG::Node::Stage, ScheduleFeatures> StageMapOfScheduleFeatures;
 
+// Parameters for the Adams2019 autoscheduler.
 struct Adams2019Params {
     int parallelism = 16;
     int beam_size = 32;
@@ -32,28 +32,31 @@ struct Adams2019Params {
     int64_t memory_limit = -1;
 };
 
+}  // namespace Autoscheduler
+}  // namespace Internal
+
+// Abstract interface for any cost model (NN-based, hand-written, etc).
 class CostModel {
 public:
     virtual ~CostModel() = default;
 
-    // Configure the cost model for the algorithm to be scheduled.
-    virtual void set_pipeline_features(const FunctionDAG& dag,
-                                      const Adams2019Params& params) = 0;
+    // Called at the start of scheduling for a new pipeline.
+    virtual void set_pipeline_features(const Internal::Autoscheduler::FunctionDAG &dag,
+                                       const Internal::Autoscheduler::Adams2019Params &params) = 0;
 
-    // Enqueue a schedule to be evaluated. Will annotate the value at cost_ptr when evaluation occurs.
-    virtual void enqueue(const FunctionDAG& dag,
-                        const StageMapOfScheduleFeatures& schedule_feats,
-                        double* cost_ptr) = 0;
+    // Enqueue a candidate schedule for cost evaluation.
+    // Will write the estimated cost to *cost_ptr during evaluate_costs().
+    virtual void enqueue(const Internal::Autoscheduler::FunctionDAG &dag,
+                         const Halide::Internal::Autoscheduler::StageMapOfScheduleFeatures &schedule_feats,
+                         double *cost_ptr) = 0;
 
-    // Evaluate all schedules in the queue.
+    // Evaluate all queued schedules (batched for performance).
     virtual void evaluate_costs() = 0;
 
-    // Discard all schedules in the queue.
+    // Discard all queued but unevaluated schedules.
     virtual void reset() = 0;
 };
 
-} // namespace Autoscheduler
-} // namespace Internal
-} // namespace Halide
+}  // namespace Halide
 
-#endif // HALIDE_AUTOSCHEDULER_COST_MODEL_H
+#endif  // COST_MODEL_H
