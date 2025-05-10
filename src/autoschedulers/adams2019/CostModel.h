@@ -1,32 +1,31 @@
-/*
-  CostModel.h: Abstract base class for cost models in the Halide autoscheduler.
-  Defines the interface for evaluating the cost of a schedule state.
-*/
-
 #ifndef HALIDE_AUTOSCHEDULER_COST_MODEL_H
 #define HALIDE_AUTOSCHEDULER_COST_MODEL_H
 
-#include "FunctionDAG.h"
 #include "Halide.h"
+#include "TreeRepresentation.h"
 
 namespace Halide {
 namespace Internal {
 namespace Autoscheduler {
 
-// Forward declaration of TreeRepresentation
-class TreeRepresentation;
+class State;
 
 class CostModel {
 public:
     virtual ~CostModel() = default;
 
-    // Evaluate the cost of a given schedule state for a function DAG.
-    // Returns the estimated cost as a double.
-    virtual double evaluate_cost(const IntrusivePtr<State> &state, const FunctionDAG &dag) = 0;
+    // Evaluate the cost of a given state
+    virtual double evaluate_cost(const IntrusivePtr<State> &state) = 0;
+
+    // Update calibration data (optional, for models that support online learning)
+    virtual void update_calibration_data(const std::map<std::string, double> &features,
+                                        double predicted_cost, double actual_cost) {
+        // Default implementation: do nothing
+    }
 };
 
-}  // namespace Autoscheduler
-}  // namespace Internal
-}  // namespace Halide
+} // namespace Autoscheduler
+} // namespace Internal
+} // namespace Halide
 
-#endif  // HALIDE_AUTOSCHEDULER_COST_MODEL_H
+#endif // HALIDE_AUTOSCHEDULER_COST_MODEL_H
