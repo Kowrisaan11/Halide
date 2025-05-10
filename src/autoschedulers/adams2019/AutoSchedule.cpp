@@ -11,7 +11,7 @@ AutoScheduler::AutoScheduler(const std::string& model_path,
     metadata.timestamp = current_time;
     metadata.user = user_login;
     metadata.device_type = use_gpu ? "GPU" : "CPU";
-    
+
     cost_model = new DefaultCostModel(model_path, scaler_params_path, use_gpu);
 }
 
@@ -19,10 +19,10 @@ AutoScheduler::~AutoScheduler() {
     delete cost_model;
 }
 
-json AutoScheduler::create_dag_representation(const Pipeline& pipeline) {
+json AutoScheduler::create_dag_representation(const Halide::Pipeline& pipeline) {
     json dag_data;
     dag_data["nodes"] = json::array();
-    
+
     for (const auto& func : pipeline.outputs()) {
         json node;
         node["name"] = func.name();
@@ -41,26 +41,26 @@ json AutoScheduler::create_dag_representation(const Pipeline& pipeline) {
     return dag_data;
 }
 
-void AutoScheduler::apply_schedule(const Pipeline& pipeline, const json& schedule_data) {
+void AutoScheduler::apply_schedule(const Halide::Pipeline& pipeline, const json& schedule_data) {
     log_message("Applying schedule from ML model predictions");
     try {
         for (auto& func : pipeline.outputs()) {
             func.compute_root();
         }
-    } catch (const Error& e) {
+    } catch (const Halide::Error& e) {
         log_message("Error applying schedule: " + std::string(e.what()));
         throw;
     }
 }
 
-void AutoScheduler::operator()(const Pipeline& pipeline,
-                             const Target& target,
-                             const AutoschedulerParams& params,
-                             AutoSchedulerResults* results) {
+void AutoScheduler::operator()(const Halide::Pipeline& pipeline,
+                             const Halide::Target& target,
+                             const Halide::AutoschedulerParams& params,
+                             Halide::AutoSchedulerResults* results) {
     log_message("Starting autoscheduling process");
 
     json dag_data = create_dag_representation(pipeline);
-    
+
     double cost;
     cost_model->enqueue(dag_data, &cost);
     cost_model->evaluate_costs();
@@ -76,26 +76,24 @@ void AutoScheduler::operator()(const Pipeline& pipeline,
     }
 }
 
-void Adams2019Autoscheduler::operator()(const Pipeline& pipeline,
-                                      const Target& target,
-                                      const AutoschedulerParams& params,
-                                      AutoSchedulerResults* results) {
-    if (params.name != "adams2019") return;
-    
-    std::string model_path = "model.pt";
-    std::string scaler_params_path = "scaler_params.json";
-    bool use_gpu = target.has_gpu_feature();
-    
-    AutoScheduler scheduler(model_path, scaler_params_path, use_gpu);
-    scheduler(pipeline, target, params, results);
-}
-
-// Register the autoscheduler
-extern "C" HALIDE_EXPORT_SYMBOL void halide_register_adams2019_autoscheduler() {
-    static Adams2019Autoscheduler scheduler;
-    Pipeline::set_default_autoscheduler(&scheduler);
-}
-
 }  // namespace Autoscheduler
 }  // namespace Internal
 }  // namespace Halide
+
+// ---- Autoscheduler Registration (C linkage, no namespace) ----
+
+extern "C" HALIDE_EXPORT_SYMBOL
+void register_autoscheduler_adams2019(
+    const Halide::Pipeline &pipeline,
+    const Halide::Target &target,
+    const Halide::AutoschedulerParams &params,
+    Halide::AutoSchedulerResults *results) {
+
+    // You can use any file names or logic here as needed for your model
+    std::string model_path = "model.pt";
+    std::string scaler_params_path = "scaler_params.json";
+    bool use_gpu = target.has_gpu_feature();
+
+    Halide::Internal::Autoscheduler::AutoScheduler scheduler(model_path, scaler_params_path, use_gpu);
+    scheduler(pipeline, target, params, results);
+}
