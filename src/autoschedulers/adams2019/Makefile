@@ -20,11 +20,22 @@ HALIDE_RPATH_FOR_BIN = '-Wl,-rpath,$$ORIGIN/../lib'
 HALIDE_RPATH_FOR_LIB = '-Wl,-rpath,$$ORIGIN'
 endif
 
-# Add required libraries for JSON and PyTorch
-TORCH_DIR ?= /usr/local/libtorch
+# Set LibTorch directory
+TORCH_DIR = /home/kowrisaan/fyp/libtorch
 JSON_DIR ?= /usr/local/include
 
-CXXFLAGS += -I$(COMMON_DIR) -I$(TORCH_DIR)/include -I$(JSON_DIR) -I$(TORCH_DIR)/include/torch/csrc/api/include
+# Add timestamp and user information as compiler definitions
+CURRENT_TIME = 2025-05-10 17:40:02
+CURRENT_USER = Jathu03
+CXXFLAGS += -DCURRENT_TIME=\"$(CURRENT_TIME)\" -DCURRENT_USER=\"$(CURRENT_USER)\"
+
+# Add include paths
+CXXFLAGS += -I$(COMMON_DIR) \
+            -I$(TORCH_DIR)/include \
+            -I$(TORCH_DIR)/include/torch/csrc/api/include \
+            -I$(JSON_DIR)
+
+# Add library paths and libraries
 LDFLAGS += -L$(TORCH_DIR)/lib -ltorch -ltorch_cpu -lc10
 
 # Add CUDA support if available
@@ -33,29 +44,25 @@ ifneq ($(wildcard $(TORCH_DIR)/lib/libtorch_cuda.so),)
     CXXFLAGS += -DTORCH_CUDA_AVAILABLE
 endif
 
-AUTOSCHED_WEIGHT_OBJECTS=$(BIN)/baseline_weights.o
+# Add rpath for LibTorch
+LDFLAGS += -Wl,-rpath,$(TORCH_DIR)/lib
 
-# Only copy required model files
+# Verify LibTorch installation
+TORCH_CHECK := $(shell test -f $(TORCH_DIR)/lib/libtorch.so && echo "yes" || echo "no")
+ifeq ($(TORCH_CHECK),no)
+    $(error LibTorch not found in $(TORCH_DIR)/lib. Please check the installation)
+endif
+
+$(info Using LibTorch from $(TORCH_DIR))
+$(info Current user: $(CURRENT_USER))
+$(info Current time: $(CURRENT_TIME))
+
+# Only required model files
 MODEL_FILES = model.pt scaler_params.json
 $(BIN)/model_files: $(addprefix $(SRC)/, $(MODEL_FILES))
 	@mkdir -p $(@D)
 	cp $^ $(@D)/
 	@touch $@
-
-$(BIN)/binary2cpp: $(HALIDE_SRC_ROOT)/tools/binary2cpp.cpp
-	@mkdir -p $(@D)
-	$(CXX) $< -o $@
-
-$(BIN)/baseline_weights.cpp: $(BIN)/binary2cpp $(SRC)/baseline.weights
-	@mkdir -p $(@D)
-	$(BIN)/binary2cpp baseline_weights < $(SRC)/baseline.weights > $@
-
-$(BIN)/baseline_weights.o: $(BIN)/baseline_weights.cpp
-	$(CXX) -c $< -o $@
-
-AUTOSCHED_COST_MODEL_LIBS=\
-$(BIN)/cost_model/adams2019_cost_model.a \
-$(BIN)/cost_model/adams2019_train_cost_model.a
 
 $(BIN)/cost_model.generator: $(SRC)/cost_model_generator.cpp \
 				$(SRC)/cost_model_schedule.h \
@@ -90,18 +97,28 @@ $(BIN)/libautoschedule_adams2019.$(PLUGIN_EXT): \
 				$(SRC)/State.cpp \
 				$(SRC)/Timer.h \
 				$(COMMON_DIR)/PerfectHashMap.h \
-				$(AUTOSCHED_WEIGHT_OBJECTS) \
 				$(AUTOSCHED_COST_MODEL_LIBS) \
 				$(BIN)/auto_schedule_runtime.a \
 				$(BIN)/model_files \
 				| $(LIB_HALIDE)
 	@mkdir -p $(@D)
+	@echo "Building autoscheduler plugin..."
+	@echo "Using LibTorch: $(TORCH_DIR)"
+	@echo "User: $(CURRENT_USER)"
+	@echo "Time: $(CURRENT_TIME)"
 	$(CXX) -shared $(USE_EXPORT_DYNAMIC) -fPIC -fvisibility=hidden -fvisibility-inlines-hidden \
 		$(CXXFLAGS) $(OPTIMIZE) -I $(BIN)/cost_model \
 		$(filter-out %.h $(LIBHALIDE_LDFLAGS) $(BIN)/model_files,$^) -o $@ \
 		$(HALIDE_SYSTEM_LIBS) $(LDFLAGS) $(HALIDE_RPATH_FOR_LIB) -I $(SRC)
+	@echo "Successfully built autoscheduler plugin"
 
-.PHONY: clean
+# Build verification target
+verify_torch:
+	@echo "Verifying LibTorch installation..."
+	@test -f $(TORCH_DIR)/lib/libtorch.so || (echo "Error: LibTorch not found in $(TORCH_DIR)/lib" && exit 1)
+	@echo "LibTorch verified successfully"
+
+.PHONY: clean verify_torch
 
 clean:
 	rm -rf $(BIN)
