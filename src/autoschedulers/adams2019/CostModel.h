@@ -1,4 +1,3 @@
-```cpp
 /*
   CostModel.h: Abstract base class for cost models in Halide autoscheduler.
 */
@@ -58,4 +57,3 @@ public:
 } // namespace Halide
 
 #endif // HALIDE_AUTOSCHEDULER_COST_MODEL_H
-```
