@@ -8,6 +8,7 @@
 #include "Halide.h"
 #include "LoopNest.h"
 #include "PerfectHashMap.h"
+#include "Adams2019Params.h" 
 
 namespace Halide {
 namespace Internal {
