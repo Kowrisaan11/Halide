@@ -18,9 +18,9 @@ using json = nlohmann::json;
 class AutoScheduler {
 private:
     CostModel* cost_model{nullptr};
-    const std::string current_time{"2025-05-10 19:20:58"};
+    const std::string current_time{"2025-05-10 19:30:00"};
     const std::string user_login{"Jathu03"};
-    
+
     struct MetaData {
         bool gpu_available{false};
         std::string timestamp;
@@ -32,8 +32,8 @@ private:
         std::cout << "[" << current_time << " UTC] " << message << std::endl;
     }
 
-    json create_dag_representation(const Pipeline& pipeline);
-    void apply_schedule(const Pipeline& pipeline, const json& schedule_data);
+    json create_dag_representation(const Halide::Pipeline& pipeline);
+    void apply_schedule(const Halide::Pipeline& pipeline, const json& schedule_data);
 
 public:
     AutoScheduler(const std::string& model_path,
@@ -41,19 +41,10 @@ public:
                  bool use_gpu = false);
     ~AutoScheduler();
 
-    void operator()(const Pipeline& pipeline,
-                   const Target& target,
-                   const AutoschedulerParams& params,
-                   AutoSchedulerResults* results);
-};
-
-// Define the registry class
-class Adams2019Autoscheduler {
-public:
-    void operator()(const Pipeline& pipeline,
-                   const Target& target,
-                   const AutoschedulerParams& params,
-                   AutoSchedulerResults* results);
+    void operator()(const Halide::Pipeline& pipeline,
+                   const Halide::Target& target,
+                   const Halide::AutoschedulerParams& params,
+                   Halide::AutoSchedulerResults* results);
 };
 
 }  // namespace Autoscheduler
