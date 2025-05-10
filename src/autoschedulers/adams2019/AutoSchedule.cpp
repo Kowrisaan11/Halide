@@ -4,26 +4,6 @@ namespace Halide {
 namespace Internal {
 namespace Autoscheduler {
 
-namespace {
-// Anonymous namespace for registration
-struct AutoSchedulerRegistry {
-    void operator()(const Pipeline& pipeline,
-                   const Target& target,
-                   const AutoschedulerParams& params,
-                   AutoSchedulerResults* results) {
-        if (params.name != "adams2019") return;
-        
-        std::string model_path = "model.pt";
-        std::string scaler_params_path = "scaler_params.json";
-        bool use_gpu = target.has_gpu_feature();
-        
-        AutoScheduler scheduler(model_path, scaler_params_path, use_gpu);
-        scheduler(pipeline, target, params, results);
-    }
-};
-}  // anonymous namespace
-
-// Constructor
 AutoScheduler::AutoScheduler(const std::string& model_path,
                            const std::string& scaler_params_path,
                            bool use_gpu) {
@@ -35,13 +15,8 @@ AutoScheduler::AutoScheduler(const std::string& model_path,
     cost_model = new DefaultCostModel(model_path, scaler_params_path, use_gpu);
 }
 
-// Destructor
 AutoScheduler::~AutoScheduler() {
     delete cost_model;
-}
-
-void AutoScheduler::log_message(const std::string& message) const {
-    std::cout << "[" << current_time << " UTC] " << message << std::endl;
 }
 
 json AutoScheduler::create_dag_representation(const Pipeline& pipeline) {
@@ -101,8 +76,25 @@ void AutoScheduler::operator()(const Pipeline& pipeline,
     }
 }
 
-// Register the autoscheduler at the global scope
-REGISTER_AUTOSCHEDULER(AutoSchedulerRegistry);
+void Adams2019Autoscheduler::operator()(const Pipeline& pipeline,
+                                      const Target& target,
+                                      const AutoschedulerParams& params,
+                                      AutoSchedulerResults* results) {
+    if (params.name != "adams2019") return;
+    
+    std::string model_path = "model.pt";
+    std::string scaler_params_path = "scaler_params.json";
+    bool use_gpu = target.has_gpu_feature();
+    
+    AutoScheduler scheduler(model_path, scaler_params_path, use_gpu);
+    scheduler(pipeline, target, params, results);
+}
+
+// Register the autoscheduler
+extern "C" HALIDE_EXPORT_SYMBOL void halide_register_adams2019_autoscheduler() {
+    static Adams2019Autoscheduler scheduler;
+    Pipeline::set_default_autoscheduler(&scheduler);
+}
 
 }  // namespace Autoscheduler
 }  // namespace Internal
