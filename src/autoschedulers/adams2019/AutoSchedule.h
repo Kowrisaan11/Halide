@@ -6,6 +6,13 @@
 #include "CostModel.h"
 #include "DefaultCostModel.h"
 #include <nlohmann/json.hpp>
+// Add these Halide includes
+#include "Halide.h"
+#include "AutoSchedule.h"
+#include "Error.h"
+#include "Func.h"
+#include "Pipeline.h"
+#include "Target.h"
 
 using json = nlohmann::json;
 
@@ -16,7 +23,7 @@ namespace Autoscheduler {
 class AutoScheduler {
 private:
     CostModel* cost_model;
-    const std::string current_time{"2025-05-10 18:32:44"};
+    const std::string current_time{"2025-05-10 18:41:09"};
     const std::string user_login{"Jathu03"};
     
     struct MetaData {
@@ -25,6 +32,13 @@ private:
         std::string user;
         std::string device_type;
     } metadata;
+
+    void log_message(const std::string& message) const {
+        std::cout << "[" << current_time << " UTC] " << message << std::endl;
+    }
+
+    json create_dag_representation(const Pipeline& pipeline);
+    void apply_schedule(const Pipeline& pipeline, const json& schedule_data);
 
 public:
     AutoScheduler(const std::string& model_path,
@@ -39,24 +53,20 @@ public:
     }
 
     ~AutoScheduler() {
-        delete cost_model;
+        if (cost_model) {
+            delete cost_model;
+        }
     }
 
     void operator()(const Pipeline& pipeline,
                    const Target& target,
                    const AutoschedulerParams& params,
                    AutoSchedulerResults* results);
-
-private:
-    json create_dag_representation(const Pipeline& pipeline);
-    void apply_schedule(const Pipeline& pipeline, const json& schedule_data);
-    void log_message(const std::string& message) const {
-        std::cout << "[" << current_time << " UTC] " << message << std::endl;
-    }
 };
 
 // Registration function
-struct AutoSchedulerRegistry {
+class AutoSchedulerRegistry {
+public:
     void operator()(const Pipeline& pipeline,
                    const Target& target,
                    const AutoschedulerParams& params,
