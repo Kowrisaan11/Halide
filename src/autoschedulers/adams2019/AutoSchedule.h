@@ -3,21 +3,22 @@
 
 #include <string>
 #include <vector>
+#include <iostream>
 #include <Halide.h>
 #include "CostModel.h"
 #include "DefaultCostModel.h"
 #include <nlohmann/json.hpp>
 
+using json = nlohmann::json;
+
 namespace Halide {
 namespace Internal {
 namespace Autoscheduler {
 
-using json = nlohmann::json;
-
 class AutoScheduler {
 private:
     CostModel* cost_model;
-    const std::string current_time{"2025-05-10 18:50:28"};
+    const std::string current_time{"2025-05-10 18:54:37"};
     const std::string user_login{"Jathu03"};
     
     struct MetaData {
@@ -30,20 +31,8 @@ private:
 public:
     AutoScheduler(const std::string& model_path,
                  const std::string& scaler_params_path,
-                 bool use_gpu = false) {
-        metadata.gpu_available = use_gpu;
-        metadata.timestamp = current_time;
-        metadata.user = user_login;
-        metadata.device_type = use_gpu ? "GPU" : "CPU";
-        
-        cost_model = new DefaultCostModel(model_path, scaler_params_path, use_gpu);
-    }
-
-    ~AutoScheduler() {
-        if (cost_model) {
-            delete cost_model;
-        }
-    }
+                 bool use_gpu = false);
+    ~AutoScheduler();
 
     void operator()(const Pipeline& pipeline,
                    const Target& target,
@@ -51,29 +40,16 @@ public:
                    AutoSchedulerResults* results);
 
 private:
-    void log_message(const std::string& message) const {
-        std::cout << "[" << current_time << " UTC] " << message << std::endl;
-    }
-
+    void log_message(const std::string& message) const;
     json create_dag_representation(const Pipeline& pipeline);
     void apply_schedule(const Pipeline& pipeline, const json& schedule_data);
 };
 
-// Registration function
 struct AutoSchedulerRegistry {
     void operator()(const Pipeline& pipeline,
                    const Target& target,
                    const AutoschedulerParams& params,
-                   AutoSchedulerResults* results) {
-        if (params.name != "adams2019") return;
-        
-        std::string model_path = "model.pt";
-        std::string scaler_params_path = "scaler_params.json";
-        bool use_gpu = target.has_gpu_feature();
-        
-        AutoScheduler scheduler(model_path, scaler_params_path, use_gpu);
-        scheduler(pipeline, target, params, results);
-    }
+                   AutoSchedulerResults* results);
 };
 
 }  // namespace Autoscheduler
