@@ -1,37 +1,49 @@
 /*
-  AutoSchedule.h: Header for the Adams2019 autoscheduler.
-  Declares functions and structures for generating schedules using SimpleLSTMModel.
+  AutoSchedule.h: Interface for Adams2019 autoscheduler.
 */
 
 #ifndef HALIDE_AUTOSCHEDULER_AUTO_SCHEDULE_H
 #define HALIDE_AUTOSCHEDULER_AUTO_SCHEDULE_H
 
-#include "Halide.h"
+#include "CostModel.h"
+#include "FunctionDAG.h"
 #include "SimpleLSTMModel.h"
-#include <vector>
+#include <random>
 #include <string>
+#include <vector>
 
 namespace Halide {
 namespace Internal {
 namespace Autoscheduler {
 
-struct Adams2019Params {
-    int beam_size{10};
-    int max_samples{1000};
-    int random_seed{0};
-    double learning_rate{0.01};
-    int verbosity{0};
-};
-
 struct AutoSchedulerResults {
     std::string schedule_source;
-    std::vector<uint8_t> featurization;
+    std::vector<char> featurization;
+    AutoschedulerParams autoscheduler_params;
+};
+
+struct CachingOptions {
+    bool cache_blocks = false;
+    bool cache_features = false;
+
+    static CachingOptions MakeOptionsFromParams(const Adams2019Params &params) {
+        CachingOptions options;
+        options.cache_features = !params.disable_memoized_features;
+        options.cache_blocks = !params.disable_memoized_blocks;
+        return options;
+    }
 };
 
 void generate_schedule(const std::vector<Function> &outputs,
                        const Target &target,
                        const Adams2019Params &params,
                        AutoSchedulerResults *auto_scheduler_results);
+
+void find_and_apply_schedule(FunctionDAG &dag,
+                             const std::vector<Function> &outputs,
+                             const Adams2019Params &params,
+                             CostModel *cost_model,
+                             std::map<std::string, ScheduleFeatures> *schedule_features);
 
 } // namespace Autoscheduler
 } // namespace Internal
