@@ -32,26 +32,24 @@ private:
     json scaler_params;
     std::map<std::string, CategoryCorrection> category_calibration;
     const HardwareCorrectionFactors& correction_factors;
+    std::chrono::system_clock::time_point session_start;
+    std::string user_login;
     
+    // Queue for batch processing
     std::vector<Internal::Autoscheduler::TreeRepresentation> queued_trees;
     std::vector<double*> queued_cost_ptrs;
-    std::string user_login;
-    std::chrono::system_clock::time_point session_start;
 
 public:
     DefaultCostModel(const std::string &model_path,
                     const std::string &scaler_params_path,
                     bool use_gpu);
     
-    void set_pipeline_features(const Internal::Autoscheduler::FunctionDAG &dag,
-                             const Internal::Autoscheduler::Adams2019Params &params) override;
+    void set_pipeline_features(const Internal::Autoscheduler::FunctionDAG &dag) override;
                              
     Internal::Autoscheduler::TreeRepresentation convert_to_tree(
-        const Internal::Autoscheduler::FunctionDAG &dag,
-        const Internal::Autoscheduler::Adams2019Params &params) override;
+        const Internal::Autoscheduler::FunctionDAG &dag) override;
                                      
     void enqueue(const Internal::Autoscheduler::FunctionDAG &dag,
-                const Internal::Autoscheduler::StageMapOfScheduleFeatures &schedule_feats,
                 double *cost_ptr) override;
                 
     Internal::Autoscheduler::PredictionResult get_prediction(
@@ -63,8 +61,7 @@ public:
 
 protected:
     std::map<std::string, double> extract_features(const json &json_data) override;
-    std::string get_file_category(const std::string &file_path, 
-                                const std::map<std::string, double> &features) override;
+    std::string get_file_category(const std::map<std::string, double> &features) override;
     double compute_complexity_score(const std::map<std::string, double> &features) override;
 
 private:
