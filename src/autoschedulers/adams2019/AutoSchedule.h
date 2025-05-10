@@ -18,7 +18,7 @@ using json = nlohmann::json;
 class AutoScheduler {
 private:
     CostModel* cost_model{nullptr};
-    const std::string current_time{"2025-05-10 19:30:00"};
+    const std::string current_time{"2025-05-10 19:42:09"};
     const std::string user_login{"Jathu03"};
 
     struct MetaData {
