@@ -7,7 +7,7 @@
 #include "FunctionDAG.h"
 #include "State.h"
 #include <chrono>
-
+#include "Adams2019Params.h"  
 namespace Halide {
 namespace Internal {
 namespace Autoscheduler {
