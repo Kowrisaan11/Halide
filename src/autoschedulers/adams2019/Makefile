@@ -38,14 +38,14 @@ SRCS := \
   $(SRC)/AutoSchedule.cpp \
   $(SRC)/Cache.cpp \
   $(SRC)/DefaultCostModel.cpp \
-  $(SRC)/Weights.cpp \
+  $(SRC)/TreeRepresentation.cpp \
   $(SRC)/FunctionDAG.cpp \
   $(SRC)/LoopNest.cpp \
 
 HDRS := \
   $(SRC)/Cache.h \
   $(SRC)/DefaultCostModel.h \
-  $(SRC)/Weights.h \
+  $(SRC)/TreeRepresentation.h \
   $(SRC)/FunctionDAG.h \
   $(SRC)/LoopNest.h \
   $(SRC)/Featurization.h \
