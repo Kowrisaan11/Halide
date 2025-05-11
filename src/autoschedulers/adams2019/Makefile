@@ -1,4 +1,4 @@
-# Robust Makefile for adams2019 autoscheduler, supporting all dependencies as in the original
+# Makefile for adams2019 autoscheduler without baseline weights
 
 CXX := g++
 THIS_MAKEFILE := $(realpath $(lastword $(MAKEFILE_LIST)))
@@ -10,7 +10,6 @@ HALIDE_DISTRIB_PATH ?= $(HALIDE_SRC_ROOT)/distrib
 BIN := bin
 PLUGIN_EXT := so
 
-# Print Halide distribution path for diagnostics
 $(info Looking for Halide distro at $(HALIDE_DISTRIB_PATH). If this is incorrect, set the make variable HALIDE_DISTRIB_PATH)
 
 CXXFLAGS := -std=c++17 -fPIC -O3 -Wall -Werror \
@@ -34,35 +33,33 @@ ifeq ($(wildcard /home/kowrisaan/fyp/libtorch/lib/libtorch_cuda.so),/home/kowris
   CXXFLAGS += -DTORCH_CUDA_AVAILABLE
 endif
 
-# Object and static library dependencies
-AUTOSCHED_WEIGHT_OBJECTS := $(BIN)/baseline_weights.o
+# If you still have these libraries, keep them; otherwise remove or comment out.
 AUTOSCHED_COST_MODEL_LIBS := \
   $(BIN)/cost_model/adams2019_cost_model.a \
   $(BIN)/cost_model/adams2019_train_cost_model.a
 
-# Source files (update as needed)
 SRCS := \
-  $(SRC)/AutoSchedule.cpp \
-  $(SRC)/Cache.cpp \
-  $(SRC)/DefaultCostModel.cpp \
-  $(SRC)/Weights.cpp \
-  $(SRC)/FunctionDAG.cpp \
-  $(SRC)/LoopNest.cpp \
-  $(SRC)/State.cpp
+  AutoSchedule.cpp \
+  Cache.cpp \
+  DefaultCostModel.cpp \
+  Weights.cpp \
+  FunctionDAG.cpp \
+  LoopNest.cpp \
+  State.cpp
 
 HDRS := \
-  $(SRC)/Cache.h \
-  $(SRC)/DefaultCostModel.h \
-  $(SRC)/Weights.h \
-  $(SRC)/FunctionDAG.h \
-  $(SRC)/LoopNest.h \
-  $(SRC)/Featurization.h \
-  $(SRC)/CostModel.h \
-  $(SRC)/State.h \
-  $(SRC)/Timer.h \
+  Cache.h \
+  DefaultCostModel.h \
+  Weights.h \
+  FunctionDAG.h \
+  LoopNest.h \
+  Featurization.h \
+  CostModel.h \
+  State.h \
+  Timer.h \
   $(COMMON_DIR)/PerfectHashMap.h
 
-OBJS := $(SRCS:$(SRC)/%.cpp=$(BIN)/%.o)
+OBJS := $(SRCS:%.cpp=$(BIN)/%.o)
 
 TARGET := $(BIN)/libautoschedule_adams2019.$(PLUGIN_EXT)
 
@@ -73,11 +70,10 @@ all: $(TARGET)
 bin:
 	mkdir -p bin
 
-# Pattern rule for object files
-$(BIN)/%.o: $(SRC)/%.cpp | bin
+$(BIN)/%.o: %.cpp | bin
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
-# The main linking rule, matching the original structure and dependencies
+# The main linking rule, WITHOUT baseline weights
 $(TARGET): \
     $(COMMON_DIR)/ASLog.cpp \
     $(SRC)/AutoSchedule.cpp \
@@ -97,7 +93,6 @@ $(TARGET): \
     $(SRC)/State.cpp \
     $(SRC)/Timer.h \
     $(COMMON_DIR)/PerfectHashMap.h \
-    $(AUTOSCHED_WEIGHT_OBJECTS) \
     $(AUTOSCHED_COST_MODEL_LIBS) \
     $(BIN)/auto_schedule_runtime.a
 	@mkdir -p $(@D)
