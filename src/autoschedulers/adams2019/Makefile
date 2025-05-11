@@ -65,9 +65,9 @@ all: $(TARGET)
 bin:
 	mkdir -p bin
 
-$(BIN)/%.o: %.cpp | bin
-	$(CXX) $(CXXFLAGS) -c $< -o $@
 
+bin/%.o: %.cpp | bin
+	$(CXX) $(CXXFLAGS) -c $< -o $@
 # Main linking rule, NO baseline weights, NO adams2019_cost_model.a dependencies
 $(TARGET): $(OBJS)
 	@mkdir -p $(@D)
