@@ -1,4 +1,3 @@
-```makefile
 CXX := g++
 THIS_MAKEFILE := $(realpath $(lastword $(MAKEFILE_LIST)))
 # Update SRC to point directly to the correct source directory
@@ -42,7 +41,6 @@ SRCS := \
   $(SRC)/Weights.cpp \
   $(SRC)/FunctionDAG.cpp \
   $(SRC)/LoopNest.cpp \
-  $(SRC)/SimpleLSTMModel.cpp \
   $(SRC)/State.cpp \
   $(SRC)/TreeRepresentation.cpp \
   $(SRC)/Utils.cpp \
@@ -54,7 +52,6 @@ HDRS := \
   $(SRC)/Weights.h \
   $(SRC)/FunctionDAG.h \
   $(SRC)/LoopNest.h \
-  $(SRC)/SimpleLSTMModel.h \
   $(SRC)/State.h \
   $(SRC)/TreeRepresentation.h \
   $(SRC)/Featurization.h \
@@ -114,4 +111,3 @@ verbose:
 			echo "    (MISSING)"; \
 		fi; \
 	done
-```
