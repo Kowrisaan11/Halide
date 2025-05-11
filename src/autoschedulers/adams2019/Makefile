@@ -1,4 +1,4 @@
-# Makefile for adams2019 autoscheduler without baseline weights
+# Makefile for adams2019 autoscheduler WITHOUT baseline weights or cost_model.a dependencies
 
 CXX := g++
 THIS_MAKEFILE := $(realpath $(lastword $(MAKEFILE_LIST)))
@@ -32,11 +32,6 @@ ifeq ($(wildcard /home/kowrisaan/fyp/libtorch/lib/libtorch_cuda.so),/home/kowris
   LDFLAGS += -ltorch_cuda -lcuda
   CXXFLAGS += -DTORCH_CUDA_AVAILABLE
 endif
-
-# If you still have these libraries, keep them; otherwise remove or comment out.
-AUTOSCHED_COST_MODEL_LIBS := \
-  $(BIN)/cost_model/adams2019_cost_model.a \
-  $(BIN)/cost_model/adams2019_train_cost_model.a
 
 SRCS := \
   AutoSchedule.cpp \
@@ -73,30 +68,10 @@ bin:
 $(BIN)/%.o: %.cpp | bin
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
-# The main linking rule, WITHOUT baseline weights
-$(TARGET): \
-    $(COMMON_DIR)/ASLog.cpp \
-    $(SRC)/AutoSchedule.cpp \
-    $(SRC)/Cache.h \
-    $(SRC)/Cache.cpp \
-    $(SRC)/DefaultCostModel.h \
-    $(SRC)/DefaultCostModel.cpp \
-    $(SRC)/Weights.h \
-    $(SRC)/Weights.cpp \
-    $(SRC)/FunctionDAG.h \
-    $(SRC)/FunctionDAG.cpp \
-    $(SRC)/LoopNest.h \
-    $(SRC)/LoopNest.cpp \
-    $(SRC)/Featurization.h \
-    $(SRC)/CostModel.h \
-    $(SRC)/State.h \
-    $(SRC)/State.cpp \
-    $(SRC)/Timer.h \
-    $(COMMON_DIR)/PerfectHashMap.h \
-    $(AUTOSCHED_COST_MODEL_LIBS) \
-    $(BIN)/auto_schedule_runtime.a
+# Main linking rule, NO baseline weights, NO adams2019_cost_model.a dependencies
+$(TARGET): $(OBJS)
 	@mkdir -p $(@D)
-	$(CXX) -shared -fPIC -fvisibility=hidden -fvisibility-inlines-hidden $(CXXFLAGS) $(filter %.cpp %.o %.a,$^) $(LDFLAGS) -o $@ -I $(SRC)
+	$(CXX) -shared -fPIC -fvisibility=hidden -fvisibility-inlines-hidden $(CXXFLAGS) $^ $(LDFLAGS) -o $@ -I $(SRC)
 
 clean:
 	rm -rf bin
