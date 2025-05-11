@@ -23,7 +23,9 @@ LDFLAGS := -shared -L/home/kowrisaan/fyp/libtorch/lib \
   -Wl,-rpath,/home/kowrisaan/fyp/libtorch/lib \
   -L$(HALIDE_DISTRIB_PATH)/lib \
   -lHalide -ldl -lpthread -lz
-
+$(BIN)/libautoschedule_adams2019.$(PLUGIN_EXT): \
+				$(COMMON_DIR)/ASLog.cpp \
+				$(SRC)/AutoSchedule.cpp \
 ifeq ($(wildcard /home/kowrisaan/fyp/libtorch/lib/libtorch_cuda.so),/home/kowrisaan/fyp/libtorch/lib/libtorch_cuda.so)
   LDFLAGS += -ltorch_cuda -lcuda
   CXXFLAGS += -DTORCH_CUDA_AVAILABLE
