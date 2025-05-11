@@ -1,12 +1,13 @@
-# Complete Makefile for adams2019 autoscheduler
-# Place this in /home/kowrisaan/fyp/Halide/src/autoschedulers/adams2019/
-# Supports building bin/libautoschedule_adams2019.so from C++ sources in this directory
+# Makefile for adams2019 autoscheduler (corrected, no extraneous endif)
 
 CXX := g++
-SRCDIR := .
-HALIDE_SRC_ROOT := $(realpath $(SRCDIR)/../../../)
+THIS_MAKEFILE := $(realpath $(lastword $(MAKEFILE_LIST)))
+SRC := $(strip $(shell dirname $(THIS_MAKEFILE)))
+HALIDE_SRC_ROOT := $(realpath $(SRC)/../../../)
+COMMON_DIR := $(realpath $(SRC)/../common/)
 HALIDE_DISTRIB_PATH ?= $(HALIDE_SRC_ROOT)/distrib
-COMMON_DIR := $(realpath $(SRCDIR)/../common/)
+
+$(info Looking for Halide distro at $(HALIDE_DISTRIB_PATH). If this is incorrect, set the make variable HALIDE_DISTRIB_PATH)
 
 CXXFLAGS := -std=c++17 -fPIC -O3 -Wall -Werror \
   -I$(HALIDE_DISTRIB_PATH)/include \
@@ -14,7 +15,7 @@ CXXFLAGS := -std=c++17 -fPIC -O3 -Wall -Werror \
   -I$(HALIDE_SRC_ROOT)/src \
   -I$(HALIDE_SRC_ROOT)/tools \
   -I$(COMMON_DIR) \
-  -I$(SRCDIR) \
+  -I$(SRC) \
   -I/home/kowrisaan/fyp/libtorch/include \
   -I/home/kowrisaan/fyp/libtorch/include/torch/csrc/api/include
 
@@ -23,22 +24,15 @@ LDFLAGS := -shared -L/home/kowrisaan/fyp/libtorch/lib \
   -Wl,-rpath,/home/kowrisaan/fyp/libtorch/lib \
   -L$(HALIDE_DISTRIB_PATH)/lib \
   -lHalide -ldl -lpthread -lz
-$(BIN)/libautoschedule_adams2019.$(PLUGIN_EXT): \
-				$(COMMON_DIR)/ASLog.cpp \
-				$(SRC)/AutoSchedule.cpp \
+
 ifeq ($(wildcard /home/kowrisaan/fyp/libtorch/lib/libtorch_cuda.so),/home/kowrisaan/fyp/libtorch/lib/libtorch_cuda.so)
   LDFLAGS += -ltorch_cuda -lcuda
   CXXFLAGS += -DTORCH_CUDA_AVAILABLE
 endif
 
-# Source and object files
-SRCS := \
-  AutoSchedule.cpp \
-  DefaultCostModel.cpp
-
+SRCS := AutoSchedule.cpp DefaultCostModel.cpp
 OBJS := $(patsubst %.cpp,bin/%.o,$(SRCS))
 
-# Target shared library
 TARGET := bin/libautoschedule_adams2019.so
 
 .PHONY: all clean
