@@ -1,4 +1,4 @@
-# Makefile for adams2019 autoscheduler WITHOUT baseline weights or cost_model.a dependencies
+```makefile
 CXX := g++
 THIS_MAKEFILE := $(realpath $(lastword $(MAKEFILE_LIST)))
 # Update SRC to point directly to the correct source directory
@@ -20,7 +20,8 @@ CXXFLAGS := -std=c++17 -fPIC -O3 -Wall -Werror \
   -I$(COMMON_DIR) \
   -I$(SRC) \
   -I/home/kowrisaan/fyp/libtorch/include \
-  -I/home/kowrisaan/fyp/libtorch/include/torch/csrc/api/include
+  -I/home/kowrisaan/fyp/libtorch/include/torch/csrc/api/include \
+  -I/usr/include/nlohmann
 
 LDFLAGS := -shared -L/home/kowrisaan/fyp/libtorch/lib \
   -ltorch -ltorch_cpu -lc10 \
@@ -41,6 +42,11 @@ SRCS := \
   $(SRC)/Weights.cpp \
   $(SRC)/FunctionDAG.cpp \
   $(SRC)/LoopNest.cpp \
+  $(SRC)/SimpleLSTMModel.cpp \
+  $(SRC)/State.cpp \
+  $(SRC)/TreeRepresentation.cpp \
+  $(SRC)/Utils.cpp \
+  $(COMMON_DIR)/ASLog.cpp
 
 HDRS := \
   $(SRC)/Cache.h \
@@ -48,12 +54,17 @@ HDRS := \
   $(SRC)/Weights.h \
   $(SRC)/FunctionDAG.h \
   $(SRC)/LoopNest.h \
+  $(SRC)/SimpleLSTMModel.h \
+  $(SRC)/State.h \
+  $(SRC)/TreeRepresentation.h \
   $(SRC)/Featurization.h \
   $(SRC)/CostModel.h \
-  $(COMMON_DIR)/PerfectHashMap.h
+  $(SRC)/AutoSchedule.h \
+  $(COMMON_DIR)/PerfectHashMap.h \
+  $(COMMON_DIR)/ASLog.h
 
 # Transform the source paths to object paths
-OBJS := $(patsubst $(SRC)/%.cpp,$(BIN)/%.o,$(SRCS))
+OBJS := $(patsubst %.cpp,$(BIN)/%.o,$(notdir $(SRCS)))
 
 TARGET := $(BIN)/libautoschedule_adams2019.$(PLUGIN_EXT)
 
@@ -72,6 +83,10 @@ $(BIN):
 
 # Explicit rule for each object file to ensure correct paths
 $(BIN)/%.o: $(SRC)/%.cpp | $(BIN)
+	@echo "Compiling $< to $@"
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(BIN)/%.o: $(COMMON_DIR)/%.cpp | $(BIN)
 	@echo "Compiling $< to $@"
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
@@ -99,3 +114,4 @@ verbose:
 			echo "    (MISSING)"; \
 		fi; \
 	done
+```
