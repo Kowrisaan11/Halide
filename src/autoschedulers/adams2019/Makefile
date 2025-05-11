@@ -41,7 +41,6 @@ SRCS := \
   $(SRC)/Weights.cpp \
   $(SRC)/FunctionDAG.cpp \
   $(SRC)/LoopNest.cpp \
-  $(SRC)/State.cpp \
   $(SRC)/TreeRepresentation.cpp \
   $(SRC)/Utils.cpp \
   $(COMMON_DIR)/ASLog.cpp
@@ -52,7 +51,6 @@ HDRS := \
   $(SRC)/Weights.h \
   $(SRC)/FunctionDAG.h \
   $(SRC)/LoopNest.h \
-  $(SRC)/State.h \
   $(SRC)/TreeRepresentation.h \
   $(SRC)/Featurization.h \
   $(SRC)/CostModel.h \
