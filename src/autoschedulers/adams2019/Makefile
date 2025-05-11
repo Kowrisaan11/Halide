@@ -41,7 +41,6 @@ SRCS := \
   $(SRC)/Weights.cpp \
   $(SRC)/FunctionDAG.cpp \
   $(SRC)/LoopNest.cpp \
-  $(SRC)/State.cpp
 
 HDRS := \
   $(SRC)/Cache.h \
@@ -51,8 +50,6 @@ HDRS := \
   $(SRC)/LoopNest.h \
   $(SRC)/Featurization.h \
   $(SRC)/CostModel.h \
-  $(SRC)/State.h \
-  $(SRC)/Timer.h \
   $(COMMON_DIR)/PerfectHashMap.h
 
 # Transform the source paths to object paths
