@@ -1,17 +1,13 @@
 # Makefile for adams2019 autoscheduler WITHOUT baseline weights or cost_model.a dependencies
-
 CXX := g++
 THIS_MAKEFILE := $(realpath $(lastword $(MAKEFILE_LIST)))
 SRC := $(strip $(shell dirname $(THIS_MAKEFILE)))
 HALIDE_SRC_ROOT := $(realpath $(SRC)/../../../)
 COMMON_DIR := $(realpath $(SRC)/../common/)
 HALIDE_DISTRIB_PATH ?= $(HALIDE_SRC_ROOT)/distrib
-
 BIN := bin
 PLUGIN_EXT := so
-
 $(info Looking for Halide distro at $(HALIDE_DISTRIB_PATH). If this is incorrect, set the make variable HALIDE_DISTRIB_PATH)
-
 CXXFLAGS := -std=c++17 -fPIC -O3 -Wall -Werror \
   -I$(HALIDE_DISTRIB_PATH)/include \
   -I$(HALIDE_DISTRIB_PATH)/tools \
@@ -21,18 +17,15 @@ CXXFLAGS := -std=c++17 -fPIC -O3 -Wall -Werror \
   -I$(SRC) \
   -I/home/kowrisaan/fyp/libtorch/include \
   -I/home/kowrisaan/fyp/libtorch/include/torch/csrc/api/include
-
 LDFLAGS := -shared -L/home/kowrisaan/fyp/libtorch/lib \
   -ltorch -ltorch_cpu -lc10 \
   -Wl,-rpath,/home/kowrisaan/fyp/libtorch/lib \
   -L$(HALIDE_DISTRIB_PATH)/lib \
   -lHalide -ldl -lpthread -lz
-
 ifeq ($(wildcard /home/kowrisaan/fyp/libtorch/lib/libtorch_cuda.so),/home/kowrisaan/fyp/libtorch/lib/libtorch_cuda.so)
   LDFLAGS += -ltorch_cuda -lcuda
   CXXFLAGS += -DTORCH_CUDA_AVAILABLE
 endif
-
 SRCS := \
   AutoSchedule.cpp \
   Cache.cpp \
@@ -41,7 +34,6 @@ SRCS := \
   FunctionDAG.cpp \
   LoopNest.cpp \
   State.cpp
-
 HDRS := \
   Cache.h \
   DefaultCostModel.h \
@@ -53,25 +45,18 @@ HDRS := \
   State.h \
   Timer.h \
   $(COMMON_DIR)/PerfectHashMap.h
-
 OBJS := $(SRCS:%.cpp=$(BIN)/%.o)
-
 TARGET := $(BIN)/libautoschedule_adams2019.$(PLUGIN_EXT)
-
 .PHONY: all clean
-
 all: $(TARGET)
-
-bin:
-	mkdir -p bin
-
-
-bin/%.o: %.cpp | bin
+$(BIN):
+	mkdir -p $(BIN)
+# Fix: Use proper source path for compilation
+$(BIN)/%.o: $(SRC)/%.cpp $(HDRS) | $(BIN)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 # Main linking rule, NO baseline weights, NO adams2019_cost_model.a dependencies
 $(TARGET): $(OBJS)
 	@mkdir -p $(@D)
 	$(CXX) -shared -fPIC -fvisibility=hidden -fvisibility-inlines-hidden $(CXXFLAGS) $^ $(LDFLAGS) -o $@ -I $(SRC)
-
 clean:
-	rm -rf bin
+	rm -rf $(BIN)
